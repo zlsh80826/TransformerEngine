@@ -124,11 +124,11 @@ class CustomCallArgsWrapper:
                  output_specific_layouts=None):
         self.output_types = output_types
         self.operands = operands
-        self.operand_layouts = CustomCallArgsWrapper.generate_layouts(operand_shapes,
-                                                                      operand_specific_layouts)
+        self.operand_layouts = CustomCallArgsWrapper.generate_layouts(
+            operand_shapes, operand_specific_layouts)
         output_shapes = [x.shape for x in output_types]
-        self.output_layouts = CustomCallArgsWrapper.generate_layouts(output_shapes,
-                                                                     output_specific_layouts)
+        self.output_layouts = CustomCallArgsWrapper.generate_layouts(
+            output_shapes, output_specific_layouts)
 
     @staticmethod
     def generate_layouts(shapes, specific_layouts):
@@ -196,19 +196,25 @@ class TransposePrimitive(BasePrimitive):
         """
 
         in_aval = ctx.avals_in[0]
-        assert in_aval.dtype in [jnp.float32, jnp.float16, jnp.bfloat16, jnp.int8]
+        assert in_aval.dtype in [
+            jnp.float32, jnp.float16, jnp.bfloat16, jnp.int8
+        ]
 
         ir_in_type = ir.RankedTensorType(inputs.type)
         ir_in_shape = ir_in_type.shape
         ir_out_dtype = te_dtype_to_ir_dtype(dtype)
 
-        out_types = [ir.RankedTensorType.get([ir_in_shape[1], ir_in_shape[0]], ir_out_dtype)]
+        out_types = [
+            ir.RankedTensorType.get([ir_in_shape[1], ir_in_shape[0]],
+                                    ir_out_dtype)
+        ]
         operands = [inputs]
         operand_shapes = [ir_in_shape]
         args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
 
         assert len(ir_in_shape) == 2
-        opaque = transformer_engine_jax.pack_common_descriptor(ir_in_shape, dtype, dtype)
+        opaque = transformer_engine_jax.pack_common_descriptor(
+            ir_in_shape, dtype, dtype)
 
         out = custom_caller(TransposePrimitive.name, args, opaque, False)
 
@@ -252,7 +258,7 @@ class CastTransposePrimitive(BasePrimitive):
                 ShapedArray((inputs.shape[1], inputs.shape[0]),
                             out_dtype,
                             named_shape=inputs.named_shape),
-                ShapedArray((1,), amax.dtype, named_shape=amax.named_shape))
+                ShapedArray((1, ), amax.dtype, named_shape=amax.named_shape))
 
     @staticmethod
     def lowering(ctx, inputs, amax, scale, scale_inv, *, out_dtype):
@@ -274,18 +280,21 @@ class CastTransposePrimitive(BasePrimitive):
         ir_scale_inv_shape = ir_amax_shape
 
         out_types = [
-            ir.RankedTensorType.get([ir_in_shape[0], ir_in_shape[1]], ir_out_dtype),
-            ir.RankedTensorType.get([ir_in_shape[1], ir_in_shape[0]], ir_out_dtype),
+            ir.RankedTensorType.get([ir_in_shape[0], ir_in_shape[1]],
+                                    ir_out_dtype),
+            ir.RankedTensorType.get([ir_in_shape[1], ir_in_shape[0]],
+                                    ir_out_dtype),
             ir.RankedTensorType.get(ir_amax_shape, ir_amax_dtype),
         ]
         operands = [inputs, amax, scale, scale_inv]
-        operand_shapes = [ir_in_shape, ir_amax_shape, ir_scale_shape, ir_scale_inv_shape]
+        operand_shapes = [
+            ir_in_shape, ir_amax_shape, ir_scale_shape, ir_scale_inv_shape
+        ]
         args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
 
         assert len(ir_in_shape) == 2
-        opaque = transformer_engine_jax.pack_common_descriptor(ir_in_shape,
-                                                               jax_dtype_to_te_dtype(in_aval.dtype),
-                                                               out_dtype)
+        opaque = transformer_engine_jax.pack_common_descriptor(
+            ir_in_shape, jax_dtype_to_te_dtype(in_aval.dtype), out_dtype)
 
         out = custom_caller(CastTransposePrimitive.name,
                             args,
@@ -299,14 +308,19 @@ class CastTransposePrimitive(BasePrimitive):
 _cast_transpose_p = register_primitive(CastTransposePrimitive)
 
 
-def cast_transpose(inputs: jnp.ndarray, amax: jnp.ndarray, scale: jnp.ndarray,
-                   scale_inv: jnp.ndarray,
-                   out_dtype: TEDType) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+def cast_transpose(
+        inputs: jnp.ndarray, amax: jnp.ndarray, scale: jnp.ndarray,
+        scale_inv: jnp.ndarray,
+        out_dtype: TEDType) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     cast transpose wrapper
     Return two tensors, FP8(inputs) and FP8(inputs.T), which are scaled by `scale`
     """
-    return _cast_transpose_p.bind(inputs, amax, scale, scale_inv, out_dtype=out_dtype)
+    return _cast_transpose_p.bind(inputs,
+                                  amax,
+                                  scale,
+                                  scale_inv,
+                                  out_dtype=out_dtype)
 
 
 class GatedGeluPrimitive(BasePrimitive):
@@ -329,7 +343,7 @@ class GatedGeluPrimitive(BasePrimitive):
         batch_shapes = inputs_shape[:-1]
         assert hidden_size % 2 == 0
         inputs_shape = inputs.shape
-        out_shape = (batch_shapes) + (hidden_size // 2,)
+        out_shape = (batch_shapes) + (hidden_size // 2, )
 
         return ShapedArray(out_shape, dtype, named_shape=inputs.named_shape)
 
@@ -338,7 +352,7 @@ class GatedGeluPrimitive(BasePrimitive):
         """
         te_gated_gelu_p lowering rules
         """
-        (in_aval,) = ctx.avals_in
+        (in_aval, ) = ctx.avals_in
         assert in_aval.dtype in [jnp.float32, jnp.float16, jnp.bfloat16]
         ir_in_type = ir.RankedTensorType(inputs.type)
         ir_in_shape = ir_in_type.shape
@@ -355,8 +369,8 @@ class GatedGeluPrimitive(BasePrimitive):
         # In Transformer, batch_size = batch x seqlen
         batch_size = reduce(operator.mul, ir_in_shape[:-1])
         in_dtype = jax_dtype_to_te_dtype(in_aval.dtype)
-        opaque = transformer_engine_jax.pack_common_descriptor((batch_size, hidden_size // 2),
-                                                               in_dtype, in_dtype)
+        opaque = transformer_engine_jax.pack_common_descriptor(
+            (batch_size, hidden_size // 2), in_dtype, in_dtype)
 
         out = custom_caller(GatedGeluPrimitive.name, args, opaque, False)
 
@@ -396,13 +410,14 @@ class GatedGeluFp8Primitive(BasePrimitive):
 
         assert len(inputs.shape) == 2
         hidden_size = inputs.shape[1]
-        batch_size = inputs.shape[0]    # In Transformer, batch_size = batch x seqlen
+        batch_size = inputs.shape[
+            0]  # In Transformer, batch_size = batch x seqlen
 
         # input_cast, input_cast_trans, amax
         return (ShapedArray((batch_size, hidden_size // 2),
                             out_dtype,
                             named_shape=inputs.named_shape),
-                ShapedArray((1,), amax.dtype, named_shape=amax.named_shape))
+                ShapedArray((1, ), amax.dtype, named_shape=amax.named_shape))
 
     @staticmethod
     def lowering(ctx, inputs, amax, scale, scale_inv, *, out_dtype):
@@ -424,17 +439,22 @@ class GatedGeluFp8Primitive(BasePrimitive):
         ir_scale_inv_shape = ir_amax_shape
 
         hidden_size = ir_in_shape[1]
-        batch_size = ir_in_shape[0]    # In Transformer, batch_size = batch x seqlen
+        batch_size = ir_in_shape[
+            0]  # In Transformer, batch_size = batch x seqlen
         out_types = [
-            ir.RankedTensorType.get([batch_size, hidden_size // 2], ir_out_dtype),
+            ir.RankedTensorType.get([batch_size, hidden_size // 2],
+                                    ir_out_dtype),
             ir.RankedTensorType.get(ir_amax_shape, ir_amax_dtype),
         ]
         operands = [inputs, amax, scale, scale_inv]
-        operand_shapes = [ir_in_shape, ir_amax_shape, ir_scale_shape, ir_scale_inv_shape]
+        operand_shapes = [
+            ir_in_shape, ir_amax_shape, ir_scale_shape, ir_scale_inv_shape
+        ]
         args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
 
         opaque = transformer_engine_jax.pack_common_descriptor(
-            (ir_in_shape[0], ir_in_shape[1] // 2), jax_dtype_to_te_dtype(in_aval.dtype), out_dtype)
+            (ir_in_shape[0], ir_in_shape[1] // 2),
+            jax_dtype_to_te_dtype(in_aval.dtype), out_dtype)
 
         out = custom_caller(GatedGeluFp8Primitive.name,
                             args,
@@ -448,15 +468,20 @@ class GatedGeluFp8Primitive(BasePrimitive):
 _gated_gelu_fp8_p = register_primitive(GatedGeluFp8Primitive)
 
 
-def gated_gelu_fp8(inputs: jnp.ndarray, amax: jnp.ndarray, scale: jnp.ndarray,
-                   scale_inv: jnp.ndarray,
-                   out_dtype: TEDType) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+def gated_gelu_fp8(
+        inputs: jnp.ndarray, amax: jnp.ndarray, scale: jnp.ndarray,
+        scale_inv: jnp.ndarray,
+        out_dtype: TEDType) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     cast gated gelu wrapper
     Return FP8(geglu(inputs))
     Assume inputs has two dimensions shape and the memory layout is (N, 2, H)
     """
-    return _gated_gelu_fp8_p.bind(inputs, amax, scale, scale_inv, out_dtype=out_dtype)
+    return _gated_gelu_fp8_p.bind(inputs,
+                                  amax,
+                                  scale,
+                                  scale_inv,
+                                  out_dtype=out_dtype)
 
 
 class DgatedGeluPrimitive(BasePrimitive):
@@ -480,7 +505,9 @@ class DgatedGeluPrimitive(BasePrimitive):
         i_hidden_size = inputs.shape[-1]
         g_hidden_szie = gelu_inputs.shape[-1]
         assert i_hidden_size * 2 == g_hidden_szie
-        return ShapedArray(gelu_inputs.shape, dtype, named_shape=inputs.named_shape)
+        return ShapedArray(gelu_inputs.shape,
+                           dtype,
+                           named_shape=inputs.named_shape)
 
     @staticmethod
     def lowering(ctx, inputs, gelu_inputs):
@@ -513,8 +540,8 @@ class DgatedGeluPrimitive(BasePrimitive):
         args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
 
         in_dtype = jax_dtype_to_te_dtype(in_aval.dtype)
-        opaque = transformer_engine_jax.pack_common_descriptor((ir_batch_szie, i_hidden_size),
-                                                               in_dtype, in_dtype)
+        opaque = transformer_engine_jax.pack_common_descriptor(
+            (ir_batch_szie, i_hidden_size), in_dtype, in_dtype)
 
         out = custom_caller(DgatedGeluPrimitive.name, args, opaque, False)
 
@@ -566,10 +593,11 @@ class DgatedGeluCastTransposePrimitive(BasePrimitive):
                 ShapedArray((gi_hidden_size, gi_batch_size),
                             out_dtype,
                             named_shape=inputs.named_shape),
-                ShapedArray((1,), amax.dtype, named_shape=amax.named_shape))
+                ShapedArray((1, ), amax.dtype, named_shape=amax.named_shape))
 
     @staticmethod
-    def lowering(ctx, inputs, gelu_inputs, amax, scale, scale_inv, *, out_dtype):
+    def lowering(ctx, inputs, gelu_inputs, amax, scale, scale_inv, *,
+                 out_dtype):
         """
         te_dgated_gelu_cast_transpose_p lowering rules
         """
@@ -597,17 +625,22 @@ class DgatedGeluCastTransposePrimitive(BasePrimitive):
         ir_scale_inv_shape = ir_amax_shape
 
         out_types = [
-            ir.RankedTensorType.get([gi_batch_size, gi_hidden_size], ir_out_dtype),
-            ir.RankedTensorType.get([gi_hidden_size, gi_batch_size], ir_out_dtype),
+            ir.RankedTensorType.get([gi_batch_size, gi_hidden_size],
+                                    ir_out_dtype),
+            ir.RankedTensorType.get([gi_hidden_size, gi_batch_size],
+                                    ir_out_dtype),
             ir.RankedTensorType.get(ir_amax_shape, ir_amax_dtype),
         ]
         operands = [inputs, gelu_inputs, amax, scale, scale_inv]
-        operand_shapes = [ir_in_shape, gi_shape, ir_amax_shape, ir_scale_shape, ir_scale_inv_shape]
+        operand_shapes = [
+            ir_in_shape, gi_shape, ir_amax_shape, ir_scale_shape,
+            ir_scale_inv_shape
+        ]
         args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
 
-        opaque = transformer_engine_jax.pack_common_descriptor((ir_batch_szie, ir_hidden_szie),
-                                                               jax_dtype_to_te_dtype(in_aval.dtype),
-                                                               out_dtype)
+        opaque = transformer_engine_jax.pack_common_descriptor(
+            (ir_batch_szie, ir_hidden_szie),
+            jax_dtype_to_te_dtype(in_aval.dtype), out_dtype)
 
         out = custom_caller(DgatedGeluCastTransposePrimitive.name,
                             args,
@@ -618,12 +651,14 @@ class DgatedGeluCastTransposePrimitive(BasePrimitive):
         return out
 
 
-_dgated_gelu_cast_transpose_p = register_primitive(DgatedGeluCastTransposePrimitive)
+_dgated_gelu_cast_transpose_p = register_primitive(
+    DgatedGeluCastTransposePrimitive)
 
 
-def dgated_gelu_cast_transpose(inputs: jnp.ndarray, gelu_inputs: jnp.ndarray, amax: jnp.ndarray,
-                               scale: jnp.ndarray, scale_inv: jnp.ndarray,
-                               out_dtype: TEDType) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+def dgated_gelu_cast_transpose(
+        inputs: jnp.ndarray, gelu_inputs: jnp.ndarray, amax: jnp.ndarray,
+        scale: jnp.ndarray, scale_inv: jnp.ndarray,
+        out_dtype: TEDType) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     cast transpose d_gated_gelu fusion wrapper
     Return FP8(dgeglu(inputs))
@@ -644,8 +679,8 @@ class GemmPrimitive(BasePrimitive):
     multiple_results = False
 
     @staticmethod
-    def abstract(A, B, A_scale_inv, B_scale_inv, *, A_dtype, B_dtype, D_dtype, transa, transb,
-                 use_split_accumulator):    # pylint: disable=unused-argument
+    def abstract(A, B, A_scale_inv, B_scale_inv, *, A_dtype, B_dtype, D_dtype,
+                 transa, transb, use_split_accumulator):  # pylint: disable=unused-argument
         """
         te_gemm_p abstract
         """
@@ -662,13 +697,14 @@ class GemmPrimitive(BasePrimitive):
         assert (transb and k == B.shape[0]) or k == B.shape[1]
 
         out_dtype = te_dtype_to_jax_dtype(D_dtype)
-        return ShapedArray((n, m),
-                           out_dtype,
-                           named_shape=merge_named_shape(A.named_shape, B.named_shape))
+        return ShapedArray(
+            (n, m),
+            out_dtype,
+            named_shape=merge_named_shape(A.named_shape, B.named_shape))
 
     @staticmethod
-    def lowering(ctx, A, B, A_scale_inv, B_scale_inv, *, A_dtype, B_dtype, D_dtype, transa, transb,
-                 use_split_accumulator):
+    def lowering(ctx, A, B, A_scale_inv, B_scale_inv, *, A_dtype, B_dtype,
+                 D_dtype, transa, transb, use_split_accumulator):
         """
         te_gemm_p lowering rules
         """
@@ -689,20 +725,23 @@ class GemmPrimitive(BasePrimitive):
         n = B_shape[1] if transb else B_shape[0]
         assert (transb and k == B_shape[0]) or k == B_shape[1]
 
-        ir_out_dtype = dtype_to_ir_type(np.dtype(te_dtype_to_jax_dtype(D_dtype)))
+        ir_out_dtype = dtype_to_ir_type(
+            np.dtype(te_dtype_to_jax_dtype(D_dtype)))
         out_types = [
             ir.RankedTensorType.get([n, m], ir_out_dtype),
         ]
         operands = [A, B, A_scale_inv, B_scale_inv]
-        operand_shapes = [A_shape, B_shape, A_scale_inv_shape, B_scale_inv_shape]
+        operand_shapes = [
+            A_shape, B_shape, A_scale_inv_shape, B_scale_inv_shape
+        ]
         args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
 
         # m, n, k here should be equal to transa=False and transb=False,
         # due to te_gemm's implementation.
         # Therefore, m=A_shape[1], n=B_shape[0], k=A_shape[0]
-        opaque = transformer_engine_jax.pack_gemm_descriptor(A_shape[1], B_shape[0], A_shape[0],
-                                                             A_dtype, B_dtype, D_dtype, transa,
-                                                             transb, use_split_accumulator)
+        opaque = transformer_engine_jax.pack_gemm_descriptor(
+            A_shape[1], B_shape[0], A_shape[0], A_dtype, B_dtype, D_dtype,
+            transa, transb, use_split_accumulator)
 
         out = custom_caller(GemmPrimitive.name, args, opaque, False)
 
@@ -750,7 +789,7 @@ class LayerNormFwdPrimitive(BasePrimitive):
             gamma,
             beta,
             *,
-            epsilon    # pylint: disable=unused-argument
+            epsilon  # pylint: disable=unused-argument
     ):
         """
         LayerNorm fwd abstract
@@ -768,9 +807,12 @@ class LayerNormFwdPrimitive(BasePrimitive):
         batch_size = x.size // hidden_size
 
         return (
-            ShapedArray(x.shape, x_dtype, named_shape=x.named_shape),    # output
-            ShapedArray((batch_size,), mu_dtype, named_shape=x.named_shape),    # mu
-            ShapedArray((batch_size,), rsigma_dtype, named_shape=x.named_shape),    # rsigma
+            ShapedArray(x.shape, x_dtype, named_shape=x.named_shape),  # output
+            ShapedArray((batch_size, ), mu_dtype,
+                        named_shape=x.named_shape),  # mu
+            ShapedArray((batch_size, ),
+                        rsigma_dtype,
+                        named_shape=x.named_shape),  # rsigma
         )
 
     @staticmethod
@@ -803,8 +845,8 @@ class LayerNormFwdPrimitive(BasePrimitive):
 
         out_types = [
             ir.RankedTensorType.get(out_shape, output_type),
-            ir.RankedTensorType.get((batch_size,), ir_mu_dtype),
-            ir.RankedTensorType.get((batch_size,), ir_rsigma_dtype),
+            ir.RankedTensorType.get((batch_size, ), ir_mu_dtype),
+            ir.RankedTensorType.get((batch_size, ), ir_rsigma_dtype),
         ]
         operands = [x, gamma, beta]
         operand_shapes = [x_shape, w_shape, b_shape]
@@ -826,7 +868,8 @@ class LayerNormFwdPrimitive(BasePrimitive):
 _layernorm_fwd_p = register_primitive(LayerNormFwdPrimitive)
 
 
-def layernorm_fwd(x: jnp.ndarray, gamma: jnp.ndarray, beta: jnp.ndarray, epsilon: float):
+def layernorm_fwd(x: jnp.ndarray, gamma: jnp.ndarray, beta: jnp.ndarray,
+                  epsilon: float):
     """
     Wrapper for TE layernorm fwd
     """
@@ -849,7 +892,7 @@ class LayerNormFwdFp8Primitive(BasePrimitive):
             scale,
             scale_inv,
             *,
-            epsilon    # pylint: disable=unused-argument
+            epsilon  # pylint: disable=unused-argument
     ):
         """
         LayerNorm fwd (fp8 out) abstract
@@ -872,10 +915,15 @@ class LayerNormFwdFp8Primitive(BasePrimitive):
         batch_size = x.size // hidden_szie
 
         return (
-            ShapedArray(x.shape, out_dtype, named_shape=x.named_shape),    # output
-            ShapedArray((batch_size,), mu_dtype, named_shape=x.named_shape),    # mu
-            ShapedArray((batch_size,), rsigma_dtype, named_shape=x.named_shape),    # rsigma
-            ShapedArray((1,), amax.dtype, named_shape=amax.named_shape),    # amax
+            ShapedArray(x.shape, out_dtype,
+                        named_shape=x.named_shape),  # output
+            ShapedArray((batch_size, ), mu_dtype,
+                        named_shape=x.named_shape),  # mu
+            ShapedArray((batch_size, ),
+                        rsigma_dtype,
+                        named_shape=x.named_shape),  # rsigma
+            ShapedArray((1, ), amax.dtype,
+                        named_shape=amax.named_shape),  # amax
         )
 
     @staticmethod
@@ -913,13 +961,14 @@ class LayerNormFwdFp8Primitive(BasePrimitive):
 
         out_types = [
             ir.RankedTensorType.get(x_shape, ir_out_dtype),
-            ir.RankedTensorType.get((batch_size,), ir_mu_dtype),
-            ir.RankedTensorType.get((batch_size,), ir_rsigma_dtype),
+            ir.RankedTensorType.get((batch_size, ), ir_mu_dtype),
+            ir.RankedTensorType.get((batch_size, ), ir_rsigma_dtype),
             ir.RankedTensorType.get(ir_amax_shape, ir_amax_dtype),
         ]
         operands = [x, gamma, beta, amax, scale, scale_inv]
         operand_shapes = [
-            x_shape, w_shape, b_shape, ir_amax_shape, ir_scale_shape, ir_scale_inv_shape
+            x_shape, w_shape, b_shape, ir_amax_shape, ir_scale_shape,
+            ir_scale_inv_shape
         ]
         args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
 
@@ -943,12 +992,19 @@ class LayerNormFwdFp8Primitive(BasePrimitive):
 _layernorm_fwd_fp8_p = register_primitive(LayerNormFwdFp8Primitive)
 
 
-def layernorm_fwd_fp8(x: jnp.ndarray, gamma: jnp.ndarray, beta: jnp.ndarray, amax: jnp.ndarray,
-                      scale: jnp.ndarray, scale_inv: jnp.ndarray, epsilon: float):
+def layernorm_fwd_fp8(x: jnp.ndarray, gamma: jnp.ndarray, beta: jnp.ndarray,
+                      amax: jnp.ndarray, scale: jnp.ndarray,
+                      scale_inv: jnp.ndarray, epsilon: float):
     """
     Wrapper for TE layernorm fwd (fp8 out)
     """
-    return _layernorm_fwd_fp8_p.bind(x, gamma, beta, amax, scale, scale_inv, epsilon=epsilon)
+    return _layernorm_fwd_fp8_p.bind(x,
+                                     gamma,
+                                     beta,
+                                     amax,
+                                     scale,
+                                     scale_inv,
+                                     epsilon=epsilon)
 
 
 class LayerNormBwdPrimitive(BasePrimitive):
@@ -966,7 +1022,7 @@ class LayerNormBwdPrimitive(BasePrimitive):
             x,
             gamma,
             *,
-            epsilon    # pylint: disable=unused-argument
+            epsilon  # pylint: disable=unused-argument
     ):
         """
         Layernorm bwd abstract
@@ -982,14 +1038,17 @@ class LayerNormBwdPrimitive(BasePrimitive):
 
         assert dtypes.canonicalize_dtype(grad_output.dtype) == w_dtype
         assert grad_output.shape == x.shape
-        assert mu.shape == rsigma.shape == (batch_size,)
+        assert mu.shape == rsigma.shape == (batch_size, )
         assert mu_dtype == rsigma_dtype == jnp.float32
         assert grad_output.named_shape == x.named_shape
 
         return (
-            ShapedArray(x.shape, x_dtype, named_shape=grad_output.named_shape),    # grad input
-            ShapedArray(gamma.shape, w_dtype, named_shape=gamma.named_shape),    # grad gamma
-            ShapedArray(gamma.shape, w_dtype, named_shape=gamma.named_shape),    # grad beta
+            ShapedArray(x.shape, x_dtype,
+                        named_shape=grad_output.named_shape),  # grad input
+            ShapedArray(gamma.shape, w_dtype,
+                        named_shape=gamma.named_shape),  # grad gamma
+            ShapedArray(gamma.shape, w_dtype,
+                        named_shape=gamma.named_shape),  # grad beta
         )
 
     @staticmethod
@@ -1040,8 +1099,8 @@ class LayerNormBwdPrimitive(BasePrimitive):
 _layernorm_bwd_p = register_primitive(LayerNormBwdPrimitive)
 
 
-def layernorm_bwd(g: jnp.ndarray, mu: jnp.ndarray, rsigma: jnp.ndarray, x: jnp.ndarray,
-                  gamma: jnp.ndarray, epsilon: float):
+def layernorm_bwd(g: jnp.ndarray, mu: jnp.ndarray, rsigma: jnp.ndarray,
+                  x: jnp.ndarray, gamma: jnp.ndarray, epsilon: float):
     """
     Wrapper for TE layernorm bwd
     """
@@ -1060,7 +1119,7 @@ class RmsNormFwdPrimitive(BasePrimitive):
             x,
             gamma,
             *,
-            epsilon    # pylint: disable=unused-argument
+            epsilon  # pylint: disable=unused-argument
     ):
         """
         RMSNorm fwd abstract
@@ -1073,8 +1132,10 @@ class RmsNormFwdPrimitive(BasePrimitive):
         batch_size = x.size // hidden_size
 
         return (
-            ShapedArray(x.shape, x_dtype, named_shape=x.named_shape),    # output
-            ShapedArray((batch_size,), rsigma_dtype, named_shape=x.named_shape),    # rsigma
+            ShapedArray(x.shape, x_dtype, named_shape=x.named_shape),  # output
+            ShapedArray((batch_size, ),
+                        rsigma_dtype,
+                        named_shape=x.named_shape),  # rsigma
         )
 
     @staticmethod
@@ -1095,7 +1156,7 @@ class RmsNormFwdPrimitive(BasePrimitive):
 
         out_types = [
             ir.RankedTensorType.get(x_shape, w_type.element_type),
-            ir.RankedTensorType.get((batch_size,), iv_element_type),
+            ir.RankedTensorType.get((batch_size, ), iv_element_type),
         ]
         operands = [x, gamma]
         operand_shapes = [x_shape, w_shape]
@@ -1139,7 +1200,7 @@ class RmsNormFwdFp8Primitive(BasePrimitive):
             scale,
             scale_inv,
             *,
-            epsilon    # pylint: disable=unused-argument
+            epsilon  # pylint: disable=unused-argument
     ):
         """
         RMSNorm fwd (fp8 out) abstract
@@ -1159,9 +1220,13 @@ class RmsNormFwdFp8Primitive(BasePrimitive):
         batch_size = x.size // hidden_size
 
         return (
-            ShapedArray(x.shape, out_dtype, named_shape=x.named_shape),    # output
-            ShapedArray((batch_size,), rsigma_dtype, named_shape=x.named_shape),    # rsigma
-            ShapedArray((1,), amax.dtype, named_shape=amax.named_shape),    # amax
+            ShapedArray(x.shape, out_dtype,
+                        named_shape=x.named_shape),  # output
+            ShapedArray((batch_size, ),
+                        rsigma_dtype,
+                        named_shape=x.named_shape),  # rsigma
+            ShapedArray((1, ), amax.dtype,
+                        named_shape=amax.named_shape),  # amax
         )
 
     @staticmethod
@@ -1195,11 +1260,13 @@ class RmsNormFwdFp8Primitive(BasePrimitive):
 
         out_types = [
             ir.RankedTensorType.get(x_shape, ir_out_dtype),
-            ir.RankedTensorType.get((batch_size,), ir_rsigma_dtype),
+            ir.RankedTensorType.get((batch_size, ), ir_rsigma_dtype),
             ir.RankedTensorType.get(ir_amax_shape, ir_amax_dtype),
         ]
         operands = [x, gamma, amax, scale, scale_inv]
-        operand_shapes = [x_shape, w_shape, ir_amax_shape, ir_scale_shape, ir_scale_inv_shape]
+        operand_shapes = [
+            x_shape, w_shape, ir_amax_shape, ir_scale_shape, ir_scale_inv_shape
+        ]
         args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
 
         opaque = transformer_engine_jax.pack_norm_descriptor(
@@ -1222,12 +1289,18 @@ class RmsNormFwdFp8Primitive(BasePrimitive):
 _rmsnorm_fwd_fp8_p = register_primitive(RmsNormFwdFp8Primitive)
 
 
-def rmsnorm_fwd_fp8(x: jnp.ndarray, gamma: jnp.ndarray, amax: jnp.ndarray, scale: jnp.ndarray,
-                    scale_inv: jnp.ndarray, epsilon: float):
+def rmsnorm_fwd_fp8(x: jnp.ndarray, gamma: jnp.ndarray, amax: jnp.ndarray,
+                    scale: jnp.ndarray, scale_inv: jnp.ndarray,
+                    epsilon: float):
     """
     Wrapper for TE rmsnorm fwd (fp8 out)
     """
-    return _rmsnorm_fwd_fp8_p.bind(x, gamma, amax, scale, scale_inv, epsilon=epsilon)
+    return _rmsnorm_fwd_fp8_p.bind(x,
+                                   gamma,
+                                   amax,
+                                   scale,
+                                   scale_inv,
+                                   epsilon=epsilon)
 
 
 class RmsNormBwdPrimitive(BasePrimitive):
@@ -1244,7 +1317,7 @@ class RmsNormBwdPrimitive(BasePrimitive):
             x,
             gamma,
             *,
-            epsilon    # pylint: disable=unused-argument
+            epsilon  # pylint: disable=unused-argument
     ):
         """
         RMSNorm bwd abstract
@@ -1259,13 +1332,15 @@ class RmsNormBwdPrimitive(BasePrimitive):
 
         assert dtypes.canonicalize_dtype(grad_output.dtype) == w_dtype
         assert grad_output.shape == x.shape
-        assert rsigma.shape == (batch_size,)
+        assert rsigma.shape == (batch_size, )
         assert rsigma_dtype == jnp.float32
         assert grad_output.named_shape == x.named_shape
 
         return (
-            ShapedArray(x.shape, x_dtype, named_shape=grad_output.named_shape),    # grad input
-            ShapedArray(gamma.shape, w_dtype, named_shape=gamma.named_shape),    # grad gamma
+            ShapedArray(x.shape, x_dtype,
+                        named_shape=grad_output.named_shape),  # grad input
+            ShapedArray(gamma.shape, w_dtype,
+                        named_shape=gamma.named_shape),  # grad gamma
         )
 
     @staticmethod
@@ -1309,8 +1384,8 @@ class RmsNormBwdPrimitive(BasePrimitive):
 _rmsnorm_bwd_p = register_primitive(RmsNormBwdPrimitive)
 
 
-def rmsnorm_bwd(grad: jnp.ndarray, inv_var: jnp.ndarray, x: jnp.ndarray, gamma: jnp.ndarray,
-                epsilon: float):
+def rmsnorm_bwd(grad: jnp.ndarray, inv_var: jnp.ndarray, x: jnp.ndarray,
+                gamma: jnp.ndarray, epsilon: float):
     """
     Wrapper for TE rmsnorm bwd
     """
@@ -1339,8 +1414,10 @@ class QuantizePrimitive(BasePrimitive):
         assert scale.dtype == jnp.float32
         assert scale_inv.dtype == jnp.float32
 
-        return (ShapedArray(inputs.shape, out_dtype, named_shape=inputs.named_shape),
-                ShapedArray((1,), amax.dtype, named_shape=amax.named_shape))
+        return (ShapedArray(inputs.shape,
+                            out_dtype,
+                            named_shape=inputs.named_shape),
+                ShapedArray((1, ), amax.dtype, named_shape=amax.named_shape))
 
     @staticmethod
     def lowering(ctx, inputs, amax, scale, scale_inv, *, out_dtype):
@@ -1372,12 +1449,13 @@ class QuantizePrimitive(BasePrimitive):
             ir.RankedTensorType.get(ir_amax_shape, ir_amax_dtype),
         ]
         operands = [inputs, amax, scale, scale_inv]
-        operand_shapes = [ir_in_shape, ir_amax_shape, ir_scale_shape, ir_scale_inv_shape]
+        operand_shapes = [
+            ir_in_shape, ir_amax_shape, ir_scale_shape, ir_scale_inv_shape
+        ]
         args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
 
-        opaque = transformer_engine_jax.pack_common_descriptor(in_aval.shape,
-                                                               jax_dtype_to_te_dtype(in_aval.dtype),
-                                                               out_dtype)
+        opaque = transformer_engine_jax.pack_common_descriptor(
+            in_aval.shape, jax_dtype_to_te_dtype(in_aval.dtype), out_dtype)
 
         out = custom_caller(QuantizePrimitive.name,
                             args,
@@ -1391,13 +1469,18 @@ class QuantizePrimitive(BasePrimitive):
 _quantize_p = register_primitive(QuantizePrimitive)
 
 
-def quantize(inputs: jnp.ndarray, amax: jnp.ndarray, scale: jnp.ndarray, scale_inv: jnp.ndarray,
+def quantize(inputs: jnp.ndarray, amax: jnp.ndarray, scale: jnp.ndarray,
+             scale_inv: jnp.ndarray,
              out_dtype: TEDType) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     quantize wrapper
     Return FP8 tensor
     """
-    return _quantize_p.bind(inputs, amax, scale, scale_inv, out_dtype=out_dtype)
+    return _quantize_p.bind(inputs,
+                            amax,
+                            scale,
+                            scale_inv,
+                            out_dtype=out_dtype)
 
 
 class DequantizePrimitive(BasePrimitive):
@@ -1424,7 +1507,9 @@ class DequantizePrimitive(BasePrimitive):
         assert scale.dtype == jnp.float32
         assert scale_inv.dtype == jnp.float32
 
-        return ShapedArray(inputs.shape, out_dtype, named_shape=inputs.named_shape)
+        return ShapedArray(inputs.shape,
+                           out_dtype,
+                           named_shape=inputs.named_shape)
 
     @staticmethod
     def lowering(ctx, inputs, amax, scale, scale_inv, *, fp8_dtype, out_dtype):
@@ -1452,10 +1537,13 @@ class DequantizePrimitive(BasePrimitive):
 
         out_types = [ir.RankedTensorType.get(ir_out_shape, ir_out_dtype)]
         operands = [inputs, amax, scale, scale_inv]
-        operand_shapes = [ir_in_shape, ir_amax_shape, ir_scale_shape, ir_scale_inv_shape]
+        operand_shapes = [
+            ir_in_shape, ir_amax_shape, ir_scale_shape, ir_scale_inv_shape
+        ]
         args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
 
-        opaque = transformer_engine_jax.pack_common_descriptor(in_aval.shape, fp8_dtype, out_dtype)
+        opaque = transformer_engine_jax.pack_common_descriptor(
+            in_aval.shape, fp8_dtype, out_dtype)
 
         out = custom_caller(DequantizePrimitive.name, args, opaque, False)
 
@@ -1465,8 +1553,9 @@ class DequantizePrimitive(BasePrimitive):
 _dequantize_p = register_primitive(DequantizePrimitive)
 
 
-def dequantize(inputs: jnp.ndarray, amax: jnp.ndarray, scale: jnp.ndarray, scale_inv: jnp.ndarray,
-               fp8_dtype: TEDType, out_dtype: TEDType) -> jnp.ndarray:
+def dequantize(inputs: jnp.ndarray, amax: jnp.ndarray, scale: jnp.ndarray,
+               scale_inv: jnp.ndarray, fp8_dtype: TEDType,
+               out_dtype: TEDType) -> jnp.ndarray:
     """
     dequantize wrapper
     Return FP16/BF16/FP32 tensor
@@ -1489,7 +1578,7 @@ class SoftmaxPrimitive(BasePrimitive):
     def get_batch_per_block(k_seqlen: int) -> int:
         """Get batch per CTA in Softmax kernels"""
         threads_per_warp = 32
-        threads_per_block = 128    # Depends on the kernel implmentation
+        threads_per_block = 128  # Depends on the kernel implmentation
 
         pow2 = 1 << (k_seqlen - 1).bit_length()
         warp_size = pow2 if pow2 < threads_per_warp else threads_per_warp
@@ -1499,18 +1588,21 @@ class SoftmaxPrimitive(BasePrimitive):
         return batches_per_block
 
     @staticmethod
-    def is_kernel_available(batch: int, heads: int, q_seqlen: int, k_seqlen: int,
-                            dtype: jnp.dtype) -> bool:
+    def is_kernel_available(batch: int, heads: int, q_seqlen: int,
+                            k_seqlen: int, dtype: jnp.dtype) -> bool:
         """Check Softmax kernel availability based on size"""
         raise NotImplementedError
 
     @staticmethod
-    def softmax_backward_abstract(grad_outputs, softmax_outputs, scale_factor=None):    # pylint: disable=unused-argument
+    def softmax_backward_abstract(grad_outputs,
+                                  softmax_outputs,
+                                  scale_factor=None):  # pylint: disable=unused-argument
         """
         MLIR abstract
         """
         grad_outputs_dtype = dtypes.canonicalize_dtype(grad_outputs.dtype)
-        softmax_outputs_dtype = dtypes.canonicalize_dtype(softmax_outputs.dtype)
+        softmax_outputs_dtype = dtypes.canonicalize_dtype(
+            softmax_outputs.dtype)
         assert grad_outputs_dtype == softmax_outputs_dtype
         assert grad_outputs_dtype in [jnp.float16, jnp.bfloat16]
         assert softmax_outputs_dtype in [jnp.float16, jnp.bfloat16]
@@ -1522,7 +1614,8 @@ class SoftmaxPrimitive(BasePrimitive):
                            named_shape=softmax_outputs.named_shape)
 
     @staticmethod
-    def softmax_backward_lowering(name, ctx, grad_outputs, softmax_outputs, scale_factor):
+    def softmax_backward_lowering(name, ctx, grad_outputs, softmax_outputs,
+                                  scale_factor):
         """
         MLIR abstract
         """
@@ -1532,7 +1625,7 @@ class SoftmaxPrimitive(BasePrimitive):
         grad_outputs_shape = grad_outputs_type.shape
 
         batch = grad_outputs_shape[0]
-        pad_batch = batch    # unused
+        pad_batch = batch  # unused
         heads = grad_outputs_shape[1]
         q_seqlen = grad_outputs_shape[2]
         k_seqlen = grad_outputs_shape[3]
@@ -1541,7 +1634,8 @@ class SoftmaxPrimitive(BasePrimitive):
         softmax_outputs_shape = softmax_outputs_type.shape
 
         out_types = [
-            ir.RankedTensorType.get(softmax_outputs_shape, softmax_outputs_type.element_type)
+            ir.RankedTensorType.get(softmax_outputs_shape,
+                                    softmax_outputs_type.element_type)
         ]
         operands = [grad_outputs, softmax_outputs]
         operand_shapes = [grad_outputs_shape, softmax_outputs_shape]
@@ -1564,28 +1658,29 @@ class ScaledSoftmaxFwdPrimitive(SoftmaxPrimitive):
     multiple_results = False
 
     @staticmethod
-    def is_kernel_available(batch: int, heads: int, q_seqlen: int, k_seqlen: int,
-                            dtype: jnp.dtype) -> bool:
+    def is_kernel_available(batch: int, heads: int, q_seqlen: int,
+                            k_seqlen: int, dtype: jnp.dtype) -> bool:
         """Check Softmax kernel availability based on size"""
         attn_batches = batch * heads
 
         if (dtype in [jnp.float16, jnp.bfloat16]
                 and 16 < k_seqlen <= SoftmaxPrimitive.max_k_seqlen_supported
-        # k_seqlen must be 16 ~ 4096
-                and q_seqlen % 4 == 0    # q_seqlen must be divisor of 4
-                and attn_batches % 4 == 0    # batch * heads must be divisor of 4
-           ):
+                # k_seqlen must be 16 ~ 4096
+                and q_seqlen % 4 == 0  # q_seqlen must be divisor of 4
+                and attn_batches % 4 == 0  # batch * heads must be divisor of 4
+            ):
             if 0 <= k_seqlen <= SoftmaxPrimitive.max_k_seqlen_supported:
-                batch_per_block = SoftmaxPrimitive.get_batch_per_block(k_seqlen)
+                batch_per_block = SoftmaxPrimitive.get_batch_per_block(
+                    k_seqlen)
                 return q_seqlen % batch_per_block == 0
         return False
 
     @staticmethod
-    def abstract(inputs, *, scale_factor):    # pylint: disable=unused-argument
+    def abstract(inputs, *, scale_factor):  # pylint: disable=unused-argument
         """
         te_scaled_softmax_forward abstract
         """
-        shape_rank = 4    # batch, heads, q_seqlen and k_seqlen
+        shape_rank = 4  # batch, heads, q_seqlen and k_seqlen
 
         i_dtype = dtypes.canonicalize_dtype(inputs.dtype)
         assert i_dtype in [jnp.float16, jnp.bfloat16]
@@ -1596,14 +1691,16 @@ class ScaledSoftmaxFwdPrimitive(SoftmaxPrimitive):
         assert k_seqlen <= SoftmaxPrimitive.max_k_seqlen_supported
         assert q_seqlen > 1
 
-        return ShapedArray(inputs.shape, i_dtype, named_shape=inputs.named_shape)
+        return ShapedArray(inputs.shape,
+                           i_dtype,
+                           named_shape=inputs.named_shape)
 
     @staticmethod
     def lowering(ctx, inputs, *, scale_factor):
         """
         te_scaled_softmax_forward lowering rules
         """
-        shape_rank = 4    # batch, heads, q_seqlen and k_seqlen
+        shape_rank = 4  # batch, heads, q_seqlen and k_seqlen
 
         i_aval, = ctx.avals_in
         i_type = ir.RankedTensorType(inputs.type)
@@ -1620,12 +1717,12 @@ class ScaledSoftmaxFwdPrimitive(SoftmaxPrimitive):
         operand_shapes = [i_shape]
         args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
 
-        opaque = transformer_engine_jax.pack_softmax_descriptor(batch, pad_batch, heads, q_seqlen,
-                                                                k_seqlen,
-                                                                jax_dtype_to_te_dtype(i_aval.dtype),
-                                                                scale_factor)
+        opaque = transformer_engine_jax.pack_softmax_descriptor(
+            batch, pad_batch, heads, q_seqlen, k_seqlen,
+            jax_dtype_to_te_dtype(i_aval.dtype), scale_factor)
 
-        out = custom_caller(ScaledSoftmaxFwdPrimitive.name, args, opaque, False)
+        out = custom_caller(ScaledSoftmaxFwdPrimitive.name, args, opaque,
+                            False)
 
         return [out]
 
@@ -1633,7 +1730,8 @@ class ScaledSoftmaxFwdPrimitive(SoftmaxPrimitive):
 _scaled_softmax_fwd_p = register_primitive(ScaledSoftmaxFwdPrimitive)
 
 
-def scaled_softmax_fwd(inputs: jnp.ndarray, scale_factor: float) -> jnp.ndarray:
+def scaled_softmax_fwd(inputs: jnp.ndarray,
+                       scale_factor: float) -> jnp.ndarray:
     """
     scaled_softmax_forward wrapper
     Return FP16/BF16 tensor
@@ -1649,28 +1747,28 @@ class ScaledSoftmaxBwdPrimitive(SoftmaxPrimitive):
     multiple_results = False
 
     @staticmethod
-    def is_kernel_available(batch: int, heads: int, q_seqlen: int, k_seqlen: int,
-                            dtype: jnp.dtype) -> bool:
+    def is_kernel_available(batch: int, heads: int, q_seqlen: int,
+                            k_seqlen: int, dtype: jnp.dtype) -> bool:
         """Check Softmax kernel availability based on size"""
-        return ScaledSoftmaxFwdPrimitive.is_kernel_available(batch, heads, q_seqlen, k_seqlen,
-                                                             dtype)
+        return ScaledSoftmaxFwdPrimitive.is_kernel_available(
+            batch, heads, q_seqlen, k_seqlen, dtype)
 
     @staticmethod
     def abstract(grad_outputs, softmax_outputs, *, scale_factor):
         """
         te_scaled_softmax_backward abstract
         """
-        return SoftmaxPrimitive.softmax_backward_abstract(grad_outputs, softmax_outputs,
-                                                          scale_factor)
+        return SoftmaxPrimitive.softmax_backward_abstract(
+            grad_outputs, softmax_outputs, scale_factor)
 
     @staticmethod
     def lowering(ctx, grad_outputs, softmax_outputs, *, scale_factor):
         """
         te_scaled_softmax_backward lowering rules
         """
-        out = SoftmaxPrimitive.softmax_backward_lowering(ScaledSoftmaxBwdPrimitive.name, ctx,
-                                                         grad_outputs, softmax_outputs,
-                                                         scale_factor)
+        out = SoftmaxPrimitive.softmax_backward_lowering(
+            ScaledSoftmaxBwdPrimitive.name, ctx, grad_outputs, softmax_outputs,
+            scale_factor)
 
         return [out]
 
@@ -1684,7 +1782,9 @@ def scaled_softmax_bwd(grad_outputs: jnp.ndarray, softmax_outputs: jnp.ndarray,
     scaled_softmax_backward wrapper
     Return FP16/BF16 tensor
     """
-    return _scaled_softmax_bwd_p.bind(grad_outputs, softmax_outputs, scale_factor=scale_factor)
+    return _scaled_softmax_bwd_p.bind(grad_outputs,
+                                      softmax_outputs,
+                                      scale_factor=scale_factor)
 
 
 class ScaledMaskedSoftmaxFwdPrimitive(SoftmaxPrimitive):
@@ -1695,28 +1795,29 @@ class ScaledMaskedSoftmaxFwdPrimitive(SoftmaxPrimitive):
     multiple_results = False
 
     @staticmethod
-    def is_kernel_available(batch: int, heads: int, q_seqlen: int, k_seqlen: int,
-                            dtype: jnp.dtype) -> bool:
+    def is_kernel_available(batch: int, heads: int, q_seqlen: int,
+                            k_seqlen: int, dtype: jnp.dtype) -> bool:
         """Check Softmax kernel availability based on size"""
         attn_batches = batch * heads
 
         if (dtype in [jnp.float16, jnp.bfloat16]
                 and 16 < k_seqlen <= SoftmaxPrimitive.max_k_seqlen_supported
-        # k_seqlen must be 16 ~ 4096
-                and q_seqlen % 4 == 0    # q_seqlen must be divisor of 4
-                and attn_batches % 4 == 0    # batch * heads must be divisor of 4
-           ):
+                # k_seqlen must be 16 ~ 4096
+                and q_seqlen % 4 == 0  # q_seqlen must be divisor of 4
+                and attn_batches % 4 == 0  # batch * heads must be divisor of 4
+            ):
             if 0 <= k_seqlen <= SoftmaxPrimitive.max_k_seqlen_supported:
-                batch_per_block = SoftmaxPrimitive.get_batch_per_block(k_seqlen)
+                batch_per_block = SoftmaxPrimitive.get_batch_per_block(
+                    k_seqlen)
                 return q_seqlen % batch_per_block == 0
         return False
 
     @staticmethod
-    def abstract(inputs, mask, *, scale_factor):    # pylint: disable=unused-argument
+    def abstract(inputs, mask, *, scale_factor):  # pylint: disable=unused-argument
         """
         te_scaled_masked_softmax_forward abstract
         """
-        shape_rank = 4    # batch, heads, q_seqlen and k_seqlen
+        shape_rank = 4  # batch, heads, q_seqlen and k_seqlen
 
         i_dtype = dtypes.canonicalize_dtype(inputs.dtype)
         assert i_dtype in [jnp.float16, jnp.bfloat16]
@@ -1735,19 +1836,21 @@ class ScaledMaskedSoftmaxFwdPrimitive(SoftmaxPrimitive):
         mask_shape = mask.shape
         assert len(mask_shape) == shape_rank
         pad_batch = mask_shape[0]
-        assert pad_batch in (1, batch)    # 1 means broadcast
-        assert mask_shape[1] == 1    # 1 means broadcast
+        assert pad_batch in (1, batch)  # 1 means broadcast
+        assert mask_shape[1] == 1  # 1 means broadcast
         assert mask_shape[2] == q_seqlen
         assert mask_shape[3] == k_seqlen
 
-        return ShapedArray(inputs.shape, i_dtype, named_shape=inputs.named_shape)
+        return ShapedArray(inputs.shape,
+                           i_dtype,
+                           named_shape=inputs.named_shape)
 
     @staticmethod
     def lowering(ctx, inputs, mask, *, scale_factor):
         """
         te_scaled_masked_softmax_forward lowering rules
         """
-        shape_rank = 4    # batch, heads, q_seqlen and k_seqlen
+        shape_rank = 4  # batch, heads, q_seqlen and k_seqlen
 
         i_aval, _ = ctx.avals_in
         i_type = ir.RankedTensorType(inputs.type)
@@ -1768,17 +1871,18 @@ class ScaledMaskedSoftmaxFwdPrimitive(SoftmaxPrimitive):
         operand_shapes = [i_shape, mask_shape]
         args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
 
-        opaque = transformer_engine_jax.pack_softmax_descriptor(batch, pad_batch, heads, q_seqlen,
-                                                                k_seqlen,
-                                                                jax_dtype_to_te_dtype(i_aval.dtype),
-                                                                scale_factor)
+        opaque = transformer_engine_jax.pack_softmax_descriptor(
+            batch, pad_batch, heads, q_seqlen, k_seqlen,
+            jax_dtype_to_te_dtype(i_aval.dtype), scale_factor)
 
-        out = custom_caller(ScaledMaskedSoftmaxFwdPrimitive.name, args, opaque, False)
+        out = custom_caller(ScaledMaskedSoftmaxFwdPrimitive.name, args, opaque,
+                            False)
 
         return [out]
 
 
-_scaled_masked_softmax_fwd_p = register_primitive(ScaledMaskedSoftmaxFwdPrimitive)
+_scaled_masked_softmax_fwd_p = register_primitive(
+    ScaledMaskedSoftmaxFwdPrimitive)
 
 
 def scaled_masked_softmax_fwd(inputs: jnp.ndarray, mask: jnp.ndarray,
@@ -1787,7 +1891,9 @@ def scaled_masked_softmax_fwd(inputs: jnp.ndarray, mask: jnp.ndarray,
     scaled_masked_softmax_forward wrapper
     Return FP16/BF16 tensor
     """
-    return _scaled_masked_softmax_fwd_p.bind(inputs, mask, scale_factor=scale_factor)
+    return _scaled_masked_softmax_fwd_p.bind(inputs,
+                                             mask,
+                                             scale_factor=scale_factor)
 
 
 class ScaledMaskedSoftmaxBwdPrimitive(SoftmaxPrimitive):
@@ -1798,36 +1904,38 @@ class ScaledMaskedSoftmaxBwdPrimitive(SoftmaxPrimitive):
     multiple_results = False
 
     @staticmethod
-    def is_kernel_available(batch: int, heads: int, q_seqlen: int, k_seqlen: int,
-                            dtype: jnp.dtype) -> bool:
+    def is_kernel_available(batch: int, heads: int, q_seqlen: int,
+                            k_seqlen: int, dtype: jnp.dtype) -> bool:
         """Check Softmax kernel availability based on size"""
-        return ScaledSoftmaxFwdPrimitive.is_kernel_available(batch, heads, q_seqlen, k_seqlen,
-                                                             dtype)
+        return ScaledSoftmaxFwdPrimitive.is_kernel_available(
+            batch, heads, q_seqlen, k_seqlen, dtype)
 
     @staticmethod
     def abstract(grad_outputs, softmax_outputs, *, scale_factor):
         """
         te_scaled_masked_softmax_backward abstract
         """
-        return SoftmaxPrimitive.softmax_backward_abstract(grad_outputs, softmax_outputs,
-                                                          scale_factor)
+        return SoftmaxPrimitive.softmax_backward_abstract(
+            grad_outputs, softmax_outputs, scale_factor)
 
     @staticmethod
     def lowering(ctx, grad_outputs, softmax_outputs, *, scale_factor):
         """
         te_scaled_masked_softmax_backward lowering rules
         """
-        out = SoftmaxPrimitive.softmax_backward_lowering(ScaledMaskedSoftmaxBwdPrimitive.name, ctx,
-                                                         grad_outputs, softmax_outputs,
-                                                         scale_factor)
+        out = SoftmaxPrimitive.softmax_backward_lowering(
+            ScaledMaskedSoftmaxBwdPrimitive.name, ctx, grad_outputs,
+            softmax_outputs, scale_factor)
 
         return [out]
 
 
-_scaled_masked_softmax_bwd_p = register_primitive(ScaledMaskedSoftmaxBwdPrimitive)
+_scaled_masked_softmax_bwd_p = register_primitive(
+    ScaledMaskedSoftmaxBwdPrimitive)
 
 
-def scaled_masked_softmax_bwd(grad_outputs: jnp.ndarray, softmax_outputs: jnp.ndarray,
+def scaled_masked_softmax_bwd(grad_outputs: jnp.ndarray,
+                              softmax_outputs: jnp.ndarray,
                               scale_factor: float) -> jnp.ndarray:
     """
     scaled_masked_softmax_backward wrapper
@@ -1846,28 +1954,29 @@ class ScaledUpperTriangMaskedSoftmaxFwdPrimitive(SoftmaxPrimitive):
     multiple_results = False
 
     @staticmethod
-    def is_kernel_available(batch: int, heads: int, q_seqlen: int, k_seqlen: int,
-                            dtype: jnp.dtype) -> bool:
+    def is_kernel_available(batch: int, heads: int, q_seqlen: int,
+                            k_seqlen: int, dtype: jnp.dtype) -> bool:
         """Check Softmax kernel availability based on size"""
         attn_batches = batch * heads
 
         if (dtype in [jnp.float16, jnp.bfloat16]
                 and 16 < k_seqlen <= SoftmaxPrimitive.max_k_seqlen_supported
-        # k_seqlen must be 16 ~ 4096
-                and q_seqlen % 4 == 0    # q_seqlen must be divisor of 4
-                and attn_batches % 4 == 0    # batch * heads must be divisor of 4
-           ):
+                # k_seqlen must be 16 ~ 4096
+                and q_seqlen % 4 == 0  # q_seqlen must be divisor of 4
+                and attn_batches % 4 == 0  # batch * heads must be divisor of 4
+            ):
             if 0 <= k_seqlen <= SoftmaxPrimitive.max_k_seqlen_supported:
-                batch_per_block = SoftmaxPrimitive.get_batch_per_block(k_seqlen)
+                batch_per_block = SoftmaxPrimitive.get_batch_per_block(
+                    k_seqlen)
                 return attn_batches % batch_per_block == 0
         return False
 
     @staticmethod
-    def abstract(inputs, *, scale_factor):    # pylint: disable=unused-argument
+    def abstract(inputs, *, scale_factor):  # pylint: disable=unused-argument
         """
         te_scaled_upper_triang_masked_softmax_forward abstract
         """
-        shape_rank = 4    # batch, heads, q_seqlen and k_seqlen
+        shape_rank = 4  # batch, heads, q_seqlen and k_seqlen
 
         i_dtype = dtypes.canonicalize_dtype(inputs.dtype)
         assert i_dtype in [jnp.float16, jnp.bfloat16]
@@ -1879,14 +1988,16 @@ class ScaledUpperTriangMaskedSoftmaxFwdPrimitive(SoftmaxPrimitive):
         assert k_seqlen <= SoftmaxPrimitive.max_k_seqlen_supported
         assert q_seqlen > 1
 
-        return ShapedArray(inputs.shape, i_dtype, named_shape=inputs.named_shape)
+        return ShapedArray(inputs.shape,
+                           i_dtype,
+                           named_shape=inputs.named_shape)
 
     @staticmethod
     def lowering(ctx, inputs, *, scale_factor):
         """
         te_scaled_upper_triang_masked_softmax_forward lowering rules
         """
-        shape_rank = 4    # batch, heads, q_seqlen and k_seqlen
+        shape_rank = 4  # batch, heads, q_seqlen and k_seqlen
 
         i_aval, = ctx.avals_in
         i_type = ir.RankedTensorType(inputs.type)
@@ -1903,12 +2014,12 @@ class ScaledUpperTriangMaskedSoftmaxFwdPrimitive(SoftmaxPrimitive):
         operand_shapes = [i_shape]
         args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
 
-        opaque = transformer_engine_jax.pack_softmax_descriptor(batch, pad_batch, heads, q_seqlen,
-                                                                k_seqlen,
-                                                                jax_dtype_to_te_dtype(i_aval.dtype),
-                                                                scale_factor)
+        opaque = transformer_engine_jax.pack_softmax_descriptor(
+            batch, pad_batch, heads, q_seqlen, k_seqlen,
+            jax_dtype_to_te_dtype(i_aval.dtype), scale_factor)
 
-        out = custom_caller(ScaledUpperTriangMaskedSoftmaxFwdPrimitive.name, args, opaque, False)
+        out = custom_caller(ScaledUpperTriangMaskedSoftmaxFwdPrimitive.name,
+                            args, opaque, False)
 
         return [out]
 
@@ -1916,12 +2027,14 @@ _scaled_upper_triang_masked_softmax_fwd_p = \
     register_primitive(ScaledUpperTriangMaskedSoftmaxFwdPrimitive)
 
 
-def scaled_upper_triang_masked_softmax_fwd(inputs: jnp.ndarray, scale_factor: float) -> jnp.ndarray:
+def scaled_upper_triang_masked_softmax_fwd(inputs: jnp.ndarray,
+                                           scale_factor: float) -> jnp.ndarray:
     """
     scaled_upper_triang_masked_softmax_forward wrapper
     Return FP16/BF16 tensor
     """
-    return _scaled_upper_triang_masked_softmax_fwd_p.bind(inputs, scale_factor=scale_factor)
+    return _scaled_upper_triang_masked_softmax_fwd_p.bind(
+        inputs, scale_factor=scale_factor)
 
 
 class ScaledUpperTriangMaskedSoftmaxBwdPrimitive(SoftmaxPrimitive):
@@ -1932,8 +2045,8 @@ class ScaledUpperTriangMaskedSoftmaxBwdPrimitive(SoftmaxPrimitive):
     multiple_results = False
 
     @staticmethod
-    def is_kernel_available(batch: int, heads: int, q_seqlen: int, k_seqlen: int,
-                            dtype: jnp.dtype) -> bool:
+    def is_kernel_available(batch: int, heads: int, q_seqlen: int,
+                            k_seqlen: int, dtype: jnp.dtype) -> bool:
         """Check Softmax kernel availability based on size"""
         return ScaledUpperTriangMaskedSoftmaxFwdPrimitive.is_kernel_available(
             batch, heads, q_seqlen, k_seqlen, dtype)
@@ -1943,8 +2056,8 @@ class ScaledUpperTriangMaskedSoftmaxBwdPrimitive(SoftmaxPrimitive):
         """
         te_scaled_upper_triang_masked_softmax_backward abstract
         """
-        return SoftmaxPrimitive.softmax_backward_abstract(grad_outputs, softmax_outputs,
-                                                          scale_factor)
+        return SoftmaxPrimitive.softmax_backward_abstract(
+            grad_outputs, softmax_outputs, scale_factor)
 
     @staticmethod
     def lowering(ctx, grad_outputs, softmax_outputs, *, scale_factor):
@@ -1952,8 +2065,8 @@ class ScaledUpperTriangMaskedSoftmaxBwdPrimitive(SoftmaxPrimitive):
         te_scaled_upper_triang_masked_softmax_backward lowering rules
         """
         out = SoftmaxPrimitive.softmax_backward_lowering(
-            ScaledUpperTriangMaskedSoftmaxBwdPrimitive.name, ctx, grad_outputs, softmax_outputs,
-            scale_factor)
+            ScaledUpperTriangMaskedSoftmaxBwdPrimitive.name, ctx, grad_outputs,
+            softmax_outputs, scale_factor)
 
         return [out]
 
@@ -1961,12 +2074,237 @@ _scaled_upper_triang_masked_softmax_bwd_p = \
     register_primitive(ScaledUpperTriangMaskedSoftmaxBwdPrimitive)
 
 
-def scaled_upper_triang_masked_softmax_bwd(grad_outputs: jnp.ndarray, softmax_outputs: jnp.ndarray,
+def scaled_upper_triang_masked_softmax_bwd(grad_outputs: jnp.ndarray,
+                                           softmax_outputs: jnp.ndarray,
                                            scale_factor: float) -> jnp.ndarray:
     """
     scaled_upper_triang_masked_softmax_backward wrapper
     Return FP16/BF16 tensor
     """
-    return _scaled_upper_triang_masked_softmax_bwd_p.bind(grad_outputs,
-                                                          softmax_outputs,
-                                                          scale_factor=scale_factor)
+    return _scaled_upper_triang_masked_softmax_bwd_p.bind(
+        grad_outputs, softmax_outputs, scale_factor=scale_factor)
+
+
+class SelfMultiHeadAttentionFwdPrimitive(BasePrimitive):
+    """
+    Self Multi-head Attention Forward Primitive
+    """
+    name = "te_self_mha_forward"
+    multiple_results = True
+
+    @staticmethod
+    def abstract(
+        qkv,
+        bias,
+        q_seqlen,
+        kv_seqlen,
+        *,
+        seed,  # pylint: disable=unused-argument
+        scaling_factor,  # pylint: disable=unused-argument
+        dropout_probability,  # pylint: disable=unused-argument
+        is_causal_masking  # pylint: disable=unused-argument
+    ):
+        """
+        Self multi-head attention fwd abstract
+        """
+        qkv_dtype = dtypes.canonicalize_dtype(qkv.dtype)
+        batch, max_seqlen, nqkv, num_head, head_dim = qkv.shape
+        assert nqkv == 3
+        assert qkv.dtype == bias.dtype
+        assert q_seqlen.dtype == kv_seqlen.dtype
+
+        output_shape = (batch, max_seqlen, num_head, head_dim)
+        output_dtype = qkv_dtype
+
+        softmax_output_shape = (batch, num_head, max_seqlen, max_seqlen)
+        softmax_dtype = qkv_dtype
+
+        return (
+            ShapedArray(output_shape,
+                        output_dtype,
+                        named_shape=qkv.named_shape),  # mha_output
+            ShapedArray(softmax_output_shape,
+                        softmax_dtype,
+                        named_shape=qkv.named_shape),  # softmax_output
+        )
+
+    @staticmethod
+    def lowering(ctx, qkv, bias, q_seqlen, kv_seqlen, *, seed, scaling_factor,
+                 dropout_probability, is_causal_masking):
+        """
+        Self multi-head attention fwd lowering rules
+        """
+        qkv_aval, _, _, _ = ctx.avals_in
+
+        ir_qkv_type = ir.RankedTensorType(qkv.type)
+        ir_qkv_shape = ir_qkv_type.shape
+
+        ir_bias_type = ir.RankedTensorType(bias.type)
+        ir_bias_shape = ir_bias_type.shape
+
+        ir_q_seqlen_type = ir.RankedTensorType(q_seqlen.type)
+        ir_q_seqlen_shape = ir_q_seqlen_type.shape
+
+        ir_kv_seqlen_type = ir.RankedTensorType(kv_seqlen.type)
+        ir_kv_seqlen_shape = ir_kv_seqlen_type.shape
+
+        batch, max_seqlen, nqkv, num_head, head_dim = ir_qkv_shape
+        assert nqkv == 3
+
+        output_shape = (batch, max_seqlen, num_head, head_dim)
+        softmax_output_shape = (batch, num_head, max_seqlen, max_seqlen)
+
+        out_types = [
+            ir.RankedTensorType.get(output_shape, ir_qkv_type.element_type),
+            ir.RankedTensorType.get(softmax_output_shape,
+                                    ir_qkv_type.element_type)
+        ]
+        operands = [qkv, bias, q_seqlen, kv_seqlen]
+        operand_shapes = [
+            ir_qkv_shape, ir_bias_shape, ir_q_seqlen_shape, ir_kv_seqlen_shape
+        ]
+
+        args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
+        opaque = transformer_engine_jax.pack_mha_descriptor(
+            batch, num_head, max_seqlen, max_seqlen, head_dim, seed,
+            scaling_factor, dropout_probability, is_causal_masking,
+            jax_dtype_to_te_dtype(qkv_aval.dtype))
+
+        out = custom_caller(SelfMultiHeadAttentionFwdPrimitive.name,
+                            args,
+                            opaque,
+                            has_side_effect=False)
+
+        return out
+
+
+_self_mha_fwd_p = register_primitive(SelfMultiHeadAttentionFwdPrimitive)
+
+
+def self_mha_fwd(qkv: jnp.ndarray, bias: jnp.ndarray, q_seqlen: jnp.ndarray,
+                 kv_seqlen: jnp.ndarray, seed: int, scaling_factor: float,
+                 dropout_probability: float, is_causal_masking: bool):
+    """
+    Wrapper for TE self multi-head attention fwd
+    """
+    return _self_mha_fwd_p.bind(qkv,
+                                bias,
+                                q_seqlen,
+                                kv_seqlen,
+                                seed=seed,
+                                scaling_factor=scaling_factor,
+                                dropout_probability=dropout_probability,
+                                is_causal_masking=is_causal_masking)
+
+
+class SelfMultiHeadAttentionBwdPrimitive(BasePrimitive):
+    """
+    Self Multi-head Attention Backward Primitive
+    """
+    name = "te_self_mha_backward"
+    multiple_results = True
+
+    @staticmethod
+    def abstract(
+        qkv,
+        softmax_output,
+        doutput,
+        q_seqlen,
+        kv_seqlen,
+        *,
+        scaling_factor,  # pylint: disable=unused-argument
+        dropout_probability,  # pylint: disable=unused-argument
+        is_causal_masking  # pylint: disable=unused-argument
+    ):
+        """
+        Self multi-head attention bwd abstract
+        """
+        qkv_dtype = dtypes.canonicalize_dtype(qkv.dtype)
+        softmax_output_dtype = dtypes.canonicalize_dtype(softmax_output.dtype)
+        assert qkv.dtype == softmax_output.dtype == doutput.dtype
+        assert q_seqlen.dtype == kv_seqlen.dtype
+
+        return (
+            ShapedArray(qkv.shape, qkv_dtype,
+                        named_shape=qkv.named_shape),  # dqkv
+            ShapedArray(softmax_output.shape,
+                        softmax_output_dtype,
+                        named_shape=softmax_output.named_shape),  # dsoftmax
+        )
+
+    @staticmethod
+    def lowering(ctx, qkv, softmax_output, doutput, q_seqlen, kv_seqlen, *,
+                 scaling_factor, dropout_probability, is_causal_masking):
+        """
+        Self multi-head attention bwd lowering rules
+        """
+        qkv_aval, _, _, _, _ = ctx.avals_in
+
+        ir_qkv_type = ir.RankedTensorType(qkv.type)
+        ir_qkv_shape = ir_qkv_type.shape
+
+        ir_softmax_output_type = ir.RankedTensorType(softmax_output.type)
+        ir_softmax_output_shape = ir_softmax_output_type.shape
+
+        ir_doutput_type = ir.RankedTensorType(doutput.type)
+        ir_doutput_shape = ir_doutput_type.shape
+
+        ir_q_seqlen_type = ir.RankedTensorType(q_seqlen.type)
+        ir_q_seqlen_shape = ir_q_seqlen_type.shape
+
+        ir_kv_seqlen_type = ir.RankedTensorType(kv_seqlen.type)
+        ir_kv_seqlen_shape = ir_kv_seqlen_type.shape
+
+        batch, max_seqlen, num_head, head_dim = ir_doutput_shape
+
+        out_types = [
+            ir.RankedTensorType.get(ir_qkv_shape, ir_qkv_type.element_type),
+            ir.RankedTensorType.get(ir_softmax_output_shape,
+                                    ir_softmax_output_type.element_type)
+        ]
+        operands = [qkv, softmax_output, doutput, q_seqlen, kv_seqlen]
+        operand_shapes = [
+            ir_qkv_shape, ir_softmax_output_shape, ir_doutput_shape,
+            ir_q_seqlen_shape, ir_kv_seqlen_shape
+        ]
+
+        args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
+        opaque = transformer_engine_jax.pack_mha_descriptor(
+            batch,
+            num_head,
+            max_seqlen,
+            max_seqlen,
+            head_dim,
+            0,  # unused in bwd
+            scaling_factor,
+            dropout_probability,
+            is_causal_masking,
+            jax_dtype_to_te_dtype(qkv_aval.dtype))
+
+        out = custom_caller(SelfMultiHeadAttentionBwdPrimitive.name,
+                            args,
+                            opaque,
+                            has_side_effect=False,
+                            operand_output_aliases={1: 1})
+
+        return out
+
+
+_self_mha_bwd_p = register_primitive(SelfMultiHeadAttentionBwdPrimitive)
+
+
+def self_mha_bwd(qkv: jnp.ndarray, softmax_aux: jnp.ndarray,
+                 doutput: jnp.ndarray, q_seqlen: jnp.ndarray,
+                 kv_seqlen: jnp.ndarray, scaling_factor: float,
+                 dropout_probability: float, is_causal_masking: bool):
+    """
+    Wrapper for TE self multi-head attention bwd
+    """
+    return _self_mha_bwd_p.bind(qkv,
+                                softmax_aux,
+                                doutput,
+                                q_seqlen,
+                                kv_seqlen,
+                                scaling_factor=scaling_factor,
+                                dropout_probability=dropout_probability,
+                                is_causal_masking=is_causal_masking)

@@ -43,6 +43,8 @@ pybind11::dict Registrations() {
         EncapsulateFunction(ScaledUpperTriangMaskedSoftmaxForward);
     dict["te_scaled_upper_triang_masked_softmax_backward"] =
         EncapsulateFunction(ScaledUpperTriangMaskedSoftmaxBackward);
+    dict["te_self_mha_forward"] = EncapsulateFunction(SelfMultiheadAttentionForward);
+    dict["te_self_mha_backward"] = EncapsulateFunction(SelfMultiheadAttentionBackward);
     return dict;
 }
 
@@ -52,6 +54,7 @@ PYBIND11_MODULE(transformer_engine_jax, m) {
     m.def("pack_gemm_descriptor", &PackCustomCallGemmDescriptor);
     m.def("pack_norm_descriptor", &PackCustomCallNormDescriptor);
     m.def("pack_softmax_descriptor", &PackCustomCallSoftmaxDescriptor);
+    m.def("pack_mha_descriptor", &PackCustomCallMHADescriptor);
 
     pybind11::enum_<DType>(m, "DType", pybind11::module_local())
         .value("kByte", DType::kByte)

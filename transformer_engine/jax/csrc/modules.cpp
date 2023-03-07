@@ -77,6 +77,15 @@ pybind11::bytes PackCustomCallSoftmaxDescriptor(size_t batch, size_t pad_batch, 
         SoftmaxDescriptor{batch, pad_batch, heads, q_seqlen, k_seqlen, dtype, scale_factor});
 }
 
+pybind11::bytes PackCustomCallMHADescriptor(size_t batch, size_t num_head, size_t max_q_seqlen,
+                                            size_t max_kv_seqlen, size_t head_dim, size_t seed,
+                                            float scaling_factor, float dropout_probability,
+                                            bool is_causal_masking, DType dtype) {
+    return PackOpaque(CustomCallMHADescriptor{batch, num_head, max_q_seqlen, max_kv_seqlen,
+                                              head_dim, seed, scaling_factor, dropout_probability,
+                                              is_causal_masking, dtype});
+}
+
 void TransposeImpl(void *input, size_t rows, size_t cols, DType dtype, cudaStream_t stream,
                    void *output) {
     auto input_shape = std::vector<size_t>{rows, cols};
@@ -700,5 +709,102 @@ void ScaledUpperTriangMaskedSoftmaxBackward(cudaStream_t stream, void **buffers,
         grad_output_tensor.data(), softmax_output_tensor.data(), dgrad_tensor.data(),
         desc.scale_factor, stream);
 }
+
+cudnnDataType_t TEDTypeToCudnnDataType(DType dtype) {
+    switch (dtype) {
+        case DType::kFloat32:
+            return CUDNN_DATA_FLOAT;
+        case DType::kFloat16:
+            return CUDNN_DATA_HALF;
+        case DType::kBFloat16:
+            return CUDNN_DATA_BFLOAT16;
+    }
+    throw std::invalid_argument("Only FP32/FP16/BF16 is supported.");
+    return CUDNN_DATA_FLOAT;
+}
+
+void SelfMultiheadAttentionForward(cudaStream_t stream, void **buffers, const char *opaque,
+                                   size_t opaque_len) {
+    const CustomCallMHADescriptor &descriptor =
+        *UnpackOpaque<CustomCallMHADescriptor>(opaque, opaque_len);
+
+    // input
+    void *qkv = buffers[0];
+    void *bias = buffers[1];
+    void *q_seqlen = buffers[2];
+    void *kv_seqlen = buffers[3];
+
+    // output
+    void *output = buffers[4];
+    void *softmax_aux = buffers[5];
+
+    auto batch = descriptor.batch;
+    auto num_head = descriptor.num_head;
+    auto max_q_seqlen = descriptor.max_q_seqlen;
+    auto max_kv_seqlen = descriptor.max_kv_seqlen;
+    auto head_dim = descriptor.head_dim;
+
+    assert(max_q_seqlen == max_kv_seqlen);
+
+    // TODO: fix the enum and cudnn_dtype
+    auto dtype_size = typeToSize(descriptor.dtype);
+    assert(dtype_size == 2 && "FMHA only supports BF16/FP16 currently");
+    auto qkv_stride = num_head * head_dim * dtype_size;
+
+    cudaMemsetAsync(output, 0, batch * num_head * max_q_seqlen * head_dim * dtype_size, stream);
+    cudaMemsetAsync(softmax_aux, 0, batch * num_head * max_q_seqlen * max_kv_seqlen * dtype_size,
+                    stream);
+
+    auto handle = cudnnExecutionPlanManager::Instance().GetCudnnHandle();
+
+    run_mha_fprop(batch, num_head, max_q_seqlen, max_kv_seqlen, head_dim, descriptor.seed,
+                  MHA_Layout::QKV_INTERLEAVED, descriptor.scaling_factor,
+                  descriptor.dropout_probability, MHA_Bias_Type::POST_SCALE_BIAS,
+                  descriptor.is_causal_masking, qkv, static_cast<char *>(qkv) + qkv_stride,
+                  static_cast<char *>(qkv) + 2 * qkv_stride, softmax_aux, output, bias, q_seqlen,
+                  kv_seqlen, TEDTypeToCudnnDataType(descriptor.dtype), stream, handle);
+}
+
+void SelfMultiheadAttentionBackward(cudaStream_t stream, void **buffers, const char *opaque,
+                                    size_t opaque_len) {
+    const CustomCallMHADescriptor &descriptor =
+        *UnpackOpaque<CustomCallMHADescriptor>(opaque, opaque_len);
+
+    // input
+    void *qkv = buffers[0];
+    void *softmax_aux = buffers[1];
+    void *doutput = buffers[2];
+    void *q_seqlen = buffers[3];
+    void *kv_seqlen = buffers[4];
+
+    // output
+    void *dqkv = buffers[5];
+    void *dp = buffers[6];
+
+    auto batch = descriptor.batch;
+    auto num_head = descriptor.num_head;
+    auto max_q_seqlen = descriptor.max_q_seqlen;
+    auto max_kv_seqlen = descriptor.max_kv_seqlen;
+    auto head_dim = descriptor.head_dim;
+
+    assert(max_q_seqlen == max_kv_seqlen);
+
+    auto dtype_size = typeToSize(descriptor.dtype);
+    assert(dtype_size == 2 && "FMHA only supports BF16/FP16 currently");
+    auto qkv_stride = num_head * head_dim * dtype_size;
+
+    cudaMemsetAsync(dqkv, 0, batch * max_q_seqlen * num_head * head_dim * 3 * dtype_size, stream);
+
+    auto handle = cudnnExecutionPlanManager::Instance().GetCudnnHandle();
+
+    run_mha_bprop(batch, num_head, max_q_seqlen, max_kv_seqlen, head_dim,
+                  MHA_Layout::QKV_INTERLEAVED, descriptor.scaling_factor,
+                  descriptor.dropout_probability, descriptor.is_causal_masking, qkv,
+                  static_cast<char *>(qkv) + qkv_stride, static_cast<char *>(qkv) + 2 * qkv_stride,
+                  softmax_aux, dqkv, static_cast<char *>(dqkv) + qkv_stride,
+                  static_cast<char *>(dqkv) + 2 * qkv_stride, doutput, dp, q_seqlen, kv_seqlen,
+                  TEDTypeToCudnnDataType(descriptor.dtype), stream, handle);
+}
+
 }  // namespace jax
 }  // namespace transformer_engine
