@@ -2308,3 +2308,234 @@ def self_mha_bwd(qkv: jnp.ndarray, softmax_aux: jnp.ndarray,
                                 scaling_factor=scaling_factor,
                                 dropout_probability=dropout_probability,
                                 is_causal_masking=is_causal_masking)
+
+
+class CrossMultiHeadAttentionFwdPrimitive(BasePrimitive):
+    """
+    Cross Multi-head Attention Forward Primitive
+    """
+    name = "te_cross_mha_forward"
+    multiple_results = True
+
+    @staticmethod
+    def abstract(
+        q,
+        kv,
+        q_seqlen,
+        kv_seqlen,
+        *,
+        seed,  # pylint: disable=unused-argument
+        scaling_factor,  # pylint: disable=unused-argument
+        dropout_probability,  # pylint: disable=unused-argument
+        is_causal_masking  # pylint: disable=unused-argument
+    ):
+        """
+        Cross multi-head attention fwd abstract
+        """
+        q_dtype = dtypes.canonicalize_dtype(q.dtype)
+        batch_q, max_q_seqlen, num_head_q, head_dim_q = q.shape
+        kv_dtype = dtypes.canonicalize_dtype(kv.dtype)
+        batch_kv, max_kv_seqlen, nkv, num_head_kv, head_dim_kv = kv.shape
+
+        assert q_dtype == kv_dtype
+        assert batch_q == batch_kv
+        assert num_head_q == num_head_kv
+        assert head_dim_q == head_dim_kv
+        assert nkv == 2
+        assert q_seqlen.dtype == kv_seqlen.dtype
+
+        output_shape = q.shape
+        output_dtype = q_dtype
+        softmax_aux_shape = (batch_q, num_head_q, max_q_seqlen, max_kv_seqlen)
+        softmax_aux_dtype = q_dtype
+
+        return (
+            ShapedArray(output_shape, output_dtype,
+                        named_shape=q.named_shape),  # mha_output
+            ShapedArray(softmax_aux_shape,
+                        softmax_aux_dtype,
+                        named_shape=q.named_shape),  # softmax_aux
+        )
+
+    @staticmethod
+    def lowering(ctx, q, kv, q_seqlen, kv_seqlen, *, seed, scaling_factor,
+                 dropout_probability, is_causal_masking):
+        """
+        Cross multi-head attention fwd lowering rules
+        """
+        q_aval, kv_aval, _, _ = ctx.avals_in
+        assert q_aval.dtype == kv_aval.dtype
+
+        ir_q_type = ir.RankedTensorType(q.type)
+        ir_q_shape = ir_q_type.shape
+
+        ir_kv_type = ir.RankedTensorType(kv.type)
+        ir_kv_shape = ir_kv_type.shape
+
+        ir_q_seqlen_shape = ir.RankedTensorType(q_seqlen.type).shape
+        ir_kv_seqlen_shape = ir.RankedTensorType(kv_seqlen.type).shape
+
+        batch, max_q_seqlen, num_head, head_dim = ir_q_shape
+        max_kv_seqlen = ir_kv_shape[1]
+
+        output_shape = (batch, max_q_seqlen, num_head, head_dim)
+        softmax_output_shape = (batch, num_head, max_q_seqlen, max_kv_seqlen)
+
+        out_types = [
+            ir.RankedTensorType.get(output_shape, ir_q_type.element_type),
+            ir.RankedTensorType.get(softmax_output_shape,
+                                    ir_q_type.element_type)
+        ]
+        operands = [q, kv, q_seqlen, kv_seqlen]
+        operand_shapes = [
+            ir_q_shape, ir_kv_shape, ir_q_seqlen_shape, ir_kv_seqlen_shape
+        ]
+
+        args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
+        opaque = transformer_engine_jax.pack_mha_descriptor(
+            batch, num_head, max_q_seqlen, max_kv_seqlen, head_dim, seed,
+            scaling_factor, dropout_probability, is_causal_masking,
+            jax_dtype_to_te_dtype(q_aval.dtype))
+
+        out = custom_caller(CrossMultiHeadAttentionFwdPrimitive.name,
+                            args,
+                            opaque,
+                            has_side_effect=False)
+
+        return out
+
+
+_cross_mha_fwd_p = register_primitive(CrossMultiHeadAttentionFwdPrimitive)
+
+
+def cross_mha_fwd(q: jnp.ndarray, kv: jnp.ndarray, q_seqlen: jnp.ndarray,
+                  kv_seqlen: jnp.ndarray, seed: int, scaling_factor: float,
+                  dropout_probability: float, is_causal_masking: bool):
+    """
+    Wrapper for TE cross multi-head attention fwd
+    """
+    return _cross_mha_fwd_p.bind(q,
+                                 kv,
+                                 q_seqlen,
+                                 kv_seqlen,
+                                 seed=seed,
+                                 scaling_factor=scaling_factor,
+                                 dropout_probability=dropout_probability,
+                                 is_causal_masking=is_causal_masking)
+
+
+class CrossMultiHeadAttentionBwdPrimitive(BasePrimitive):
+    """
+    Cross Multi-head Attention Backward Primitive
+    """
+    name = "te_cross_mha_backward"
+    multiple_results = True
+
+    @staticmethod
+    def abstract(
+        q,
+        kv,
+        softmax_aux,
+        doutput,
+        q_seqlen,
+        kv_seqlen,
+        *,
+        scaling_factor,  # pylint: disable=unused-argument
+        dropout_probability,  # pylint: disable=unused-argument
+        is_causal_masking  # pylint: disable=unused-argument
+    ):
+        """
+        Cross multi-head attention bwd abstract
+        """
+        q_dtype = dtypes.canonicalize_dtype(q.dtype)
+        kv_dtype = dtypes.canonicalize_dtype(kv.dtype)
+        softmax_aux_dtype = dtypes.canonicalize_dtype(softmax_aux.dtype)
+        doutput_dtype = dtypes.canonicalize_dtype(doutput.dtype)
+        assert q_dtype == kv_dtype == softmax_aux_dtype == doutput_dtype
+        assert q_seqlen.dtype == kv_seqlen.dtype
+
+        return (
+            ShapedArray(q.shape, q_dtype, named_shape=q.named_shape),  # dq
+            ShapedArray(kv.shape, kv_dtype, named_shape=kv.named_shape),  # dkv
+            ShapedArray(softmax_aux.shape,
+                        softmax_aux_dtype,
+                        named_shape=softmax_aux.named_shape),  # dsoftmax
+        )
+
+    @staticmethod
+    def lowering(ctx, q, kv, softmax_aux, doutput, q_seqlen, kv_seqlen, *,
+                 scaling_factor, dropout_probability, is_causal_masking):
+        """
+        Cross multi-head attention bwd lowering rules
+        """
+        q_aval, _, _, _, _, _ = ctx.avals_in
+
+        ir_q_type = ir.RankedTensorType(q.type)
+        ir_q_shape = ir_q_type.shape
+
+        ir_kv_type = ir.RankedTensorType(kv.type)
+        ir_kv_shape = ir_kv_type.shape
+
+        ir_softmax_aux_type = ir.RankedTensorType(softmax_aux.type)
+        ir_softmax_aux_shape = ir_softmax_aux_type.shape
+
+        ir_doutput_shape = ir.RankedTensorType(doutput.type).shape
+        ir_q_seqlen_shape = ir.RankedTensorType(q_seqlen.type).shape
+        ir_kv_seqlen_shape = ir.RankedTensorType(kv_seqlen.type).shape
+
+        batch, max_q_seqlen, num_head, head_dim = ir_doutput_shape
+        max_kv_seqlen = ir_kv_shape[1]
+
+        out_types = [
+            ir.RankedTensorType.get(ir_q_shape, ir_q_type.element_type),
+            ir.RankedTensorType.get(ir_kv_shape, ir_kv_type.element_type),
+            ir.RankedTensorType.get(ir_softmax_aux_shape,
+                                    ir_softmax_aux_type.element_type)
+        ]
+        operands = [q, kv, softmax_aux, doutput, q_seqlen, kv_seqlen]
+        operand_shapes = [
+            ir_q_shape, ir_kv_shape, ir_softmax_aux_shape, ir_doutput_shape,
+            ir_q_seqlen_shape, ir_kv_seqlen_shape
+        ]
+
+        args = CustomCallArgsWrapper(out_types, operands, operand_shapes)
+        opaque = transformer_engine_jax.pack_mha_descriptor(
+            batch,
+            num_head,
+            max_q_seqlen,
+            max_kv_seqlen,
+            head_dim,
+            0,  # unused in bwd
+            scaling_factor,
+            dropout_probability,
+            is_causal_masking,
+            jax_dtype_to_te_dtype(q_aval.dtype))
+
+        out = custom_caller(CrossMultiHeadAttentionBwdPrimitive.name,
+                            args,
+                            opaque,
+                            has_side_effect=False,
+                            operand_output_aliases={2: 2})
+
+        return out
+
+
+_cross_mha_bwd_p = register_primitive(CrossMultiHeadAttentionBwdPrimitive)
+
+
+def cross_mha_bwd(q: jnp.ndarray, kv: jnp.ndarray, softmax_aux: jnp.ndarray,
+                  doutput: jnp.ndarray, q_seqlen: jnp.ndarray,
+                  kv_seqlen: jnp.ndarray, scaling_factor: float,
+                  dropout_probability: float, is_causal_masking: bool):
+    """
+    Wrapper for TE cross multi-head attention bwd
+    """
+    return _cross_mha_bwd_p.bind(q,
+                                 kv,
+                                 softmax_aux,
+                                 doutput,
+                                 q_seqlen,
+                                 kv_seqlen,
+                                 scaling_factor=scaling_factor,
+                                 dropout_probability=dropout_probability,
+                                 is_causal_masking=is_causal_masking)

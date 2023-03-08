@@ -168,6 +168,12 @@ void SelfMultiheadAttentionForward(cudaStream_t stream, void **buffers, const ch
 void SelfMultiheadAttentionBackward(cudaStream_t stream, void **buffers, const char *opaque,
                                     size_t opaque_len);
 
+void CrossMultiheadAttentionForward(cudaStream_t stream, void **buffers, const char *opaque,
+                                    size_t opaque_len);
+
+void CrossMultiheadAttentionBackward(cudaStream_t stream, void **buffers, const char *opaque,
+                                     size_t opaque_len);
+
 }  // namespace jax
 }  // namespace transformer_engine
 

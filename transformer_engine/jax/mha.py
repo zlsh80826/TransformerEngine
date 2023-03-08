@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 
 from .cpp_extensions import self_mha_fwd, self_mha_bwd
-# from .cpp_extensions import te_cross_fmha_fwd, te_cross_fmha_bwd
+from .cpp_extensions import cross_mha_fwd, cross_mha_bwd
 from .sharding import ShardingType
 # from .sharding import get_elementwise_sharding_meta
 # from .sharding import get_dot_sharding_meta, get_fp8_meta_sharding_meta
@@ -31,7 +31,7 @@ def self_mha(qkv: jnp.ndarray,
              sharding_type: ShardingType = ShardingType.SINGLE,
              dp_dim_index: int = 0):
     """
-    Multi-head attention wrapper
+    Self multi-head attention wrapper
     """
     assert sharding_type not in (ShardingType.TP_ROW, ShardingType.DP_TP_ROW), \
         "MHA does not support row-split tensor parallelism currently."
@@ -125,6 +125,106 @@ def _self_mha_bwd(
 
 
 _self_mha.defvjp(_self_mha_fwd, _self_mha_bwd)
+
+
+def cross_mha(q: jnp.ndarray,
+              kv: jnp.ndarray,
+              q_seqlen: jnp.ndarray,
+              kv_seqlen: jnp.ndarray,
+              seed: int,
+              scaling_factor: float,
+              dropout_probability: float,
+              is_causal_masking: bool,
+              sharding_type: ShardingType = ShardingType.SINGLE,
+              dp_dim_index: int = 0):
+    """
+    Cross multi-head attention wrapper
+    """
+    assert sharding_type not in (ShardingType.TP_ROW, ShardingType.DP_TP_ROW), \
+        "MHA does not support row-split tensor parallelism currently."
+
+    assert dp_dim_index is not None  # TODO(rewang): remove this
+
+    if sharding_type is ShardingType.SINGLE:
+        output = _cross_mha(q,
+                            kv,
+                            q_seqlen,
+                            kv_seqlen,
+                            seed=seed,
+                            scaling_factor=scaling_factor,
+                            dropout_probability=dropout_probability,
+                            is_causal_masking=is_causal_masking,
+                            sharding_type=sharding_type,
+                            dp_axis_name="")
+    else:
+        raise NotImplementedError
+
+    return output
+
+
+@partial(jax.custom_vjp, nondiff_argnums=(4, 5, 6, 7, 8, 9))
+def _cross_mha(q: jnp.ndarray, kv: jnp.ndarray, q_seqlen: jnp.ndarray,
+               kv_seqlen: jnp.ndarray, seed: int, scaling_factor: float,
+               dropout_probability: float, is_causal_masking: bool,
+               sharding_type: ShardingType, dp_axis_name: str):
+    output, _ = _cross_mha_fwd(q, kv, q_seqlen, kv_seqlen, seed,
+                               scaling_factor, dropout_probability,
+                               is_causal_masking, sharding_type, dp_axis_name)
+    return output
+
+
+def _cross_mha_fwd(
+    q,
+    kv,
+    q_seqlen,
+    kv_seqlen,
+    seed,
+    scaling_factor,
+    dropout_probability,
+    is_causal_masking,
+    sharding_type,  # pylint: disable=unused-argument
+    dp_axis_name  # pylint: disable=unused-argument
+):
+    output, softmax_aux = cross_mha_fwd(q, kv, q_seqlen, kv_seqlen, seed,
+                                        scaling_factor, dropout_probability,
+                                        is_causal_masking)
+    return output, (softmax_aux, q, kv, q_seqlen, kv_seqlen)
+
+
+def _cross_mha_bwd(
+        seed,  # pylint: disable=unused-argument
+        scaling_factor,
+        dropout_probability,
+        is_causal_masking,
+        sharding_type,
+        dp_axis_name,
+        ctx,
+        grad):
+    softmax_aux, q, kv, q_seqlen, kv_seqlen = ctx
+
+    doutput = grad
+
+    # TODO(rewang): remove dsoftmax for cross_mha
+    grad_q, grad_kv, _ = cross_mha_bwd(q,
+                                       kv,
+                                       softmax_aux,
+                                       doutput,
+                                       q_seqlen,
+                                       kv_seqlen,
+                                       scaling_factor=scaling_factor,
+                                       dropout_probability=dropout_probability,
+                                       is_causal_masking=is_causal_masking)
+
+    # TODO(rewang): is it needed?
+    if is_dp_enabled(sharding_type.value[0]):
+        grad_q = jax.lax.psum(grad_q, dp_axis_name)
+        grad_kv = jax.lax.psum(grad_kv, dp_axis_name)
+        grad_beta = jax.lax.psum(grad_beta, dp_axis_name)
+
+    return grad_q, grad_kv, None, None
+
+
+_cross_mha.defvjp(_cross_mha_fwd, _cross_mha_bwd)
 
 
 # TODO(rewang): refactor

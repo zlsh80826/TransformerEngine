@@ -746,7 +746,6 @@ void SelfMultiheadAttentionForward(cudaStream_t stream, void **buffers, const ch
 
     assert(max_q_seqlen == max_kv_seqlen);
 
-    // TODO: fix the enum and cudnn_dtype
     auto dtype_size = typeToSize(descriptor.dtype);
     assert(dtype_size == 2 && "FMHA only supports BF16/FP16 currently");
     auto qkv_stride = num_head * head_dim * dtype_size;
@@ -804,6 +803,84 @@ void SelfMultiheadAttentionBackward(cudaStream_t stream, void **buffers, const c
                   softmax_aux, dqkv, static_cast<char *>(dqkv) + qkv_stride,
                   static_cast<char *>(dqkv) + 2 * qkv_stride, doutput, dp, q_seqlen, kv_seqlen,
                   TEDTypeToCudnnDataType(descriptor.dtype), stream, handle);
+}
+
+void CrossMultiheadAttentionForward(cudaStream_t stream, void **buffers, const char *opaque,
+                                    size_t opaque_len) {
+    const CustomCallMHADescriptor &descriptor =
+        *UnpackOpaque<CustomCallMHADescriptor>(opaque, opaque_len);
+
+    // input
+    void *q = buffers[0];
+    void *kv = buffers[1];
+    void *q_seqlen = buffers[2];
+    void *kv_seqlen = buffers[3];
+
+    // output
+    void *output = buffers[4];
+    void *softmax_aux = buffers[5];
+
+    auto batch = descriptor.batch;
+    auto num_head = descriptor.num_head;
+    auto max_q_seqlen = descriptor.max_q_seqlen;
+    auto max_kv_seqlen = descriptor.max_kv_seqlen;
+    auto head_dim = descriptor.head_dim;
+
+    auto dtype_size = typeToSize(descriptor.dtype);
+    assert(dtype_size == 2 && "FMHA only supports BF16/FP16 currently");
+    auto kv_stride = num_head * head_dim * dtype_size;
+
+    cudaMemsetAsync(output, 0, batch * num_head * max_q_seqlen * head_dim * dtype_size, stream);
+
+    auto handle = cudnnExecutionPlanManager::Instance().GetCudnnHandle();
+
+    run_mha_fprop(batch, num_head, max_q_seqlen, max_kv_seqlen, head_dim, descriptor.seed,
+                  MHA_Layout::KV_INTERLEAVED, descriptor.scaling_factor,
+                  descriptor.dropout_probability, MHA_Bias_Type::NO_BIAS,
+                  descriptor.is_causal_masking, q, static_cast<char *>(kv),
+                  static_cast<char *>(kv) + kv_stride, softmax_aux, output, nullptr, q_seqlen,
+                  kv_seqlen, TEDTypeToCudnnDataType(descriptor.dtype), stream, handle);
+}
+
+void CrossMultiheadAttentionBackward(cudaStream_t stream, void **buffers, const char *opaque,
+                                     size_t opaque_len) {
+    const CustomCallMHADescriptor &descriptor =
+        *UnpackOpaque<CustomCallMHADescriptor>(opaque, opaque_len);
+
+    // input
+    void *q = buffers[0];
+    void *kv = buffers[1];
+    void *softmax_aux = buffers[2];
+    void *doutput = buffers[3];
+    void *q_seqlen = buffers[4];
+    void *kv_seqlen = buffers[5];
+
+    // output
+    void *dq = buffers[6];
+    void *dkv = buffers[7];
+    void *dp = buffers[8];
+
+    auto batch = descriptor.batch;
+    auto num_head = descriptor.num_head;
+    auto max_q_seqlen = descriptor.max_q_seqlen;
+    auto max_kv_seqlen = descriptor.max_kv_seqlen;
+    auto head_dim = descriptor.head_dim;
+
+    auto dtype_size = typeToSize(descriptor.dtype);
+    assert(dtype_size == 2 && "FMHA only supports BF16/FP16 currently");
+    auto qkv_stride = num_head * head_dim * dtype_size;
+
+    cudaMemsetAsync(dq, 0, batch * max_q_seqlen * num_head * head_dim * dtype_size, stream);
+    cudaMemsetAsync(dkv, 0, batch * max_kv_seqlen * num_head * head_dim * 2 * dtype_size, stream);
+
+    auto handle = cudnnExecutionPlanManager::Instance().GetCudnnHandle();
+
+    run_mha_bprop(batch, num_head, max_q_seqlen, max_kv_seqlen, head_dim,
+                  MHA_Layout::KV_INTERLEAVED, descriptor.scaling_factor,
+                  descriptor.dropout_probability, descriptor.is_causal_masking, q,
+                  static_cast<char *>(kv), static_cast<char *>(kv) + qkv_stride, softmax_aux, dq,
+                  static_cast<char *>(dkv), static_cast<char *>(dkv) + qkv_stride, doutput, dp,
+                  q_seqlen, kv_seqlen, TEDTypeToCudnnDataType(descriptor.dtype), stream, handle);
 }
 
 }  // namespace jax

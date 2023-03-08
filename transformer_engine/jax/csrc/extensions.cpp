@@ -45,6 +45,8 @@ pybind11::dict Registrations() {
         EncapsulateFunction(ScaledUpperTriangMaskedSoftmaxBackward);
     dict["te_self_mha_forward"] = EncapsulateFunction(SelfMultiheadAttentionForward);
     dict["te_self_mha_backward"] = EncapsulateFunction(SelfMultiheadAttentionBackward);
+    dict["te_cross_mha_forward"] = EncapsulateFunction(CrossMultiheadAttentionForward);
+    dict["te_cross_mha_backward"] = EncapsulateFunction(CrossMultiheadAttentionBackward);
     return dict;
 }
 
