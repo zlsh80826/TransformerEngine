@@ -485,9 +485,6 @@ class LayerNormDenseGeneral(TransformerEngineBase):
         Indicate whether the input tensors were switched axis of batch
         and sequence length dimension. If set to True, the input tensors
         should be in (seqlen, batch, hidden), otherwise (batch, seqlen, hidden).
-    depth_scaling: float, default = None
-        The factor to scale the output from `DenseGeneral`. It should be a float
-        value or None. When None is set, then no scaling is applied.
     sharding_type : ShardingType, default = ShardingType.SINGLE
         Indicate the sharding pattern.
     """
@@ -509,7 +506,6 @@ class LayerNormDenseGeneral(TransformerEngineBase):
     axis: Union[Iterable[int], int] = -1
     dtype: DType = jnp.float32
     transpose_batch_sequence: bool = True
-    depth_scaling: float = None
     sharding_type: ShardingType = ShardingType.SINGLE
 
     def __post_init__(self):
@@ -616,9 +612,6 @@ class LayerNormDenseGeneral(TransformerEngineBase):
 
         if bias is not None:
             z += jnp.reshape(bias, (1,) * (z.ndim - 1) + (-1,))
-
-        if self.depth_scaling is not None:
-            z = z / self.depth_scaling
 
         return z, ln_output    # dense_output, layer_norm_output
 
