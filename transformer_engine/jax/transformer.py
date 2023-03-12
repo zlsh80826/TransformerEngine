@@ -338,9 +338,11 @@ class MultiHeadAttention(nn.Module):
 
         canonicalize_dtype = dtypes.canonicalize_dtype(self.dtype)
         use_fmha = not decode and not self.transpose_batch_sequence and self.fuse_qkv and \
-            self.dropout_rate == 0 and (canonicalize_dtype == jnp.bfloat16 or canonicalize_dtype == jnp.float16)
+            self.dropout_rate == 0 and canonicalize_dtype in [jnp.bfloat16, jnp.float16]
+
         if not use_fmha:
-            print(f'{decode=} {self.transpose_batch_sequence=} {self.fuse_qkv=} {self.dropout_rate=} {canonicalize_dtype=}', flush=True)
+            print(f'[x] FMHA is not enabled. {decode=} {self.transpose_batch_sequence=} {self.fuse_qkv=} {self.dropout_rate=} {canonicalize_dtype=}',
+                flush=True)
 
         residual = inputs_q
         if self.fuse_qkv:
@@ -363,10 +365,6 @@ class MultiHeadAttention(nn.Module):
                     dtype=self.dtype)(inputs_q)
                 if not use_fmha:
                     query, key, value = jnp.split(qkv_proj, [1, 2], axis=-2)
-                    # TODO(rewang): keep the reshape?
-                    query = jnp.reshape(query, (*query.shape[:-2], -1))
-                    key = jnp.reshape(key, (*key.shape[:-2], -1))
-                    value = jnp.reshape(value, (*value.shape[:-2], -1))
             else:
                 query, ln_out = LayerNormDenseGeneral(
                     enable_layernorm=not self.output_layernorm,
@@ -395,12 +393,7 @@ class MultiHeadAttention(nn.Module):
                                        name='kv',
                                        dtype=self.dtype)(inputs_kv)
                 if not use_fmha:
-                    key, value = jnp.split(kv_proj, [
-                        1,
-                    ], axis=-2)
-                    # TODO(rewang): keep the reshape?
-                    key = jnp.reshape(key, (*key.shape[:-2], -1))
-                    value = jnp.reshape(value, (*value.shape[:-2], -1))
+                    key, value = jnp.split(kv_proj, [1], axis=-2)
         else:
             kv_projection = functools.partial(
                 DenseGeneral,
@@ -497,7 +490,8 @@ class MultiHeadAttention(nn.Module):
 
         scale_factor = 1.0/math.sqrt(self.head_dim) if self.scale_attn_logits else 1.0
         if use_fmha:
-            assert mask is not None
+            assert mask is not None and mask.ndim == 4 # (b, 1, s_q, s_kv)
+            assert not self.transpose_batch_sequence
             is_causal_masking = (self.attn_type == AttentionType.CAUSAL)
             q_seqlen = jnp.sum(mask[:, :, :, 0] == 0,
                                 axis=(-1, -2),
@@ -505,18 +499,23 @@ class MultiHeadAttention(nn.Module):
             if inputs_q is inputs_kv:
                 print(f'- SelfFMHA enabled {is_causal_masking=}', flush=True)
                 qkv_proj = qkv_proj.reshape((*qkv_proj.shape[:-1], self.num_heads, self.head_dim))
-                # TODO(rewang): sharding constrain?
+                qkv_sharding_constraint = ('batch', 'length', 'qkv_dim', 'heads','kv')
+                qkv_proj = nn_partitioning.with_sharding_constraint(qkv_proj, qkv_sharding_constraint)
                 x = self_mha(qkv_proj, bias, q_seqlen, q_seqlen,
                     seed=0,
                     scaling_factor=scale_factor,
                     dropout_probability=self.dropout_rate,
-                    is_causal_masking=is_causal_masking)
+                    is_causal_masking=is_causal_masking,
+                    sharding_type=first_sharding_type)
             else:
                 assert bias is None
                 print(f'- CrossFMHA enabled {is_causal_masking=}', flush=True)
                 query = query.reshape((*query.shape[:-1], self.num_heads, self.head_dim))
                 kv_proj = kv_proj.reshape((*kv_proj.shape[:-1], self.num_heads, self.head_dim))
-                # TODO(rewang): sharding constrain?
+                q_sharding_constraint = ('batch', 'length', 'heads', 'kv')
+                kv_sharding_constraint = ('batch', 'length', 'kv_dim', 'heads', 'kv')
+                query = nn_partitioning.with_sharding_constraint(query, q_sharding_constraint)
+                kv_proj = nn_partitioning.with_sharding_constraint(kv_proj, kv_sharding_constraint)
                 kv_seqlen = jnp.sum(mask[:, :, 0, :] == 0,
                                     axis=(-1, -2),
                                     dtype=jnp.int32)
@@ -524,7 +523,8 @@ class MultiHeadAttention(nn.Module):
                     seed=0,
                     scaling_factor=scale_factor,
                     dropout_probability=self.dropout_rate,
-                    is_causal_masking=is_causal_masking)
+                    is_causal_masking=is_causal_masking,
+                    sharding_type=first_sharding_type)
         else:
             dropout_rng = None
             if not deterministic and self.dropout_rate > 0.:
