@@ -578,15 +578,13 @@ static cudnn_frontend::Tensor createMask(
   int64_t maskOutputTensor_id = VIRTUAL_ID + 107;
   int64_t maskOutputTensor_virtual = true;
   cudnnDataType_t maskOutputTensor_dataType = CUDNN_DATA_FLOAT;
-  std::string maskOutputTensor_reorderType = "CUDNN_TENSOR_REORDERING_NONE";
+  auto maskOutputTensor_reorderType = cudnn_frontend::cudnnBackendTensorReordering_t::CUDNN_TENSOR_REORDERING_NONE;
 
   if (is_bprop) {
     maskOutputTensor_id = dS_ID;
     maskOutputTensor_virtual = false;
     maskOutputTensor_dataType = tensorType;
-#if (CUDNN_VERSION >= 8800)
-    maskOutputTensor_reorderType = "CUDNN_TENSOR_REORDERING_F16x16";
-#endif
+    maskOutputTensor_reorderType = cudnn_frontend::cudnnBackendTensorReordering_t::CUDNN_TENSOR_REORDERING_F16x16;
   }
 
   auto maskOutputTensor =
@@ -742,9 +740,7 @@ static cudnn_frontend::Tensor createSoftmaxForward(
           .setDataType(softmaxOutputType)
           .setVirtual(softmax_output_virtual)
           .setByValue(false)
-#if (CUDNN_VERSION >= 8800)
-          .setReorderType("CUDNN_TENSOR_REORDERING_F16x16")
-#endif
+          .setReorderType(cudnn_frontend::cudnnBackendTensorReordering_t::CUDNN_TENSOR_REORDERING_F16x16)
           .build();
 
   // Define the reduction descriptor
@@ -844,9 +840,7 @@ static cudnn_frontend::Tensor createDropout(
           .setDataType(tensorType)
           .setVirtual(false)
           .setByValue(false)
-#if (CUDNN_VERSION >= 8800)
-          .setReorderType("CUDNN_TENSOR_REORDERING_F16x16")
-#endif
+          .setReorderType(cudnn_frontend::cudnnBackendTensorReordering_t::CUDNN_TENSOR_REORDERING_F16x16)
           .build();
   // scale after dropout
   auto scaleDropoutTensor =
@@ -1373,9 +1367,7 @@ void run_mha_bprop(int64_t b, int64_t h, int64_t s_q, int64_t s_kv, int64_t d,
               .setDataType(tensorType)
               .setVirtual(false)
               .setByValue(false)
-#if (CUDNN_VERSION >= 8800)
-              .setReorderType("CUDNN_TENSOR_REORDERING_F16x16")
-#endif
+              .setReorderType(cudnn_frontend::cudnnBackendTensorReordering_t::CUDNN_TENSOR_REORDERING_F16x16)
               .build();
 
       // outputs from bprop

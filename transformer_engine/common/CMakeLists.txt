@@ -34,7 +34,7 @@ set_source_files_properties(fused_softmax/scaled_masked_softmax.cu
 
 set_source_files_properties(fused_mha/cudnn_fmha.cu
                             PROPERTIES
-                            INCLUDE_DIRECTORIES "/workspace/cudnn_frontend/include")
+                            INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/../3rdparty/cudnn-frontend/include")
 
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr")
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3")
