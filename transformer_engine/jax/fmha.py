@@ -19,8 +19,7 @@ jax.config.update('experimental_xmap_spmd_lowering_manual', True)
 
 def self_fmha(qkv: jnp.ndarray,
               bias: jnp.ndarray,
-              q_seqlen: jnp.ndarray,
-              kv_seqlen: jnp.ndarray,
+              mask: jnp.ndarray,
               seed: int,
               scaling_factor: float,
               dropout_probability: float,
@@ -35,8 +34,7 @@ def self_fmha(qkv: jnp.ndarray,
     if sharding_type is ShardingType.SINGLE:
         output = _self_fmha(qkv,
                             bias,
-                            q_seqlen,
-                            kv_seqlen,
+                            mask,
                             seed=seed,
                             scaling_factor=scaling_factor,
                             dropout_probability=dropout_probability,
@@ -45,13 +43,13 @@ def self_fmha(qkv: jnp.ndarray,
         dp_axis_name = "batch"
         tp_axis_name = "model"
 
-        inputs = [qkv, bias, q_seqlen, kv_seqlen]
+        inputs = [qkv, bias, mask]
         batch, seqlen, _, num_head, head_dim = qkv.shape
         output_shape = [batch, seqlen, num_head, head_dim]
         sharding_meta = get_fmha_sharding_meta(sharding_type, [x.shape for x in inputs],
                                                [output_shape],
-                                               dp_dims=([0, None, 0, 0], [0]),
-                                               tp_dims=([3, 1, None, None], [2]),
+                                               dp_dims=([0, None, 0], [0]),
+                                               tp_dims=([3, 1, None], [2]),
                                                dp_axis_name=dp_axis_name,
                                                tp_axis_name=tp_axis_name)
 
@@ -72,20 +70,25 @@ def self_fmha(qkv: jnp.ndarray,
     return output
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(4, 5, 6, 7))
-def _self_fmha(qkv: jnp.ndarray, bias: jnp.ndarray, q_seqlen: jnp.ndarray, kv_seqlen: jnp.ndarray,
-               seed: int, scaling_factor: float, dropout_probability: float,
-               is_causal_masking: bool):
-    output, _ = _self_fmha_fwd(qkv, bias, q_seqlen, kv_seqlen, seed, scaling_factor,
-                               dropout_probability, is_causal_masking)
+@partial(jax.custom_vjp, nondiff_argnums=(3, 4, 5, 6))
+def _self_fmha(qkv: jnp.ndarray, bias: jnp.ndarray, mask: jnp.ndarray, seed: int,
+               scaling_factor: float, dropout_probability: float, is_causal_masking: bool):
+    output, _ = _self_fmha_fwd(qkv, bias, mask, seed, scaling_factor, dropout_probability,
+                               is_causal_masking)
     return output
 
 
-def _self_fmha_fwd(qkv, bias, q_seqlen, kv_seqlen, seed, scaling_factor, dropout_probability,
-                   is_causal_masking):
-    output, softmax_aux = self_fmha_fwd(qkv, bias, q_seqlen, kv_seqlen, seed, scaling_factor,
+def _self_fmha_fwd(qkv, bias, mask, seed, scaling_factor, dropout_probability, is_causal_masking):
+
+    q_seqlen = jnp.sum(mask[:, :, :, 0] == 0, axis=(-1, -2), dtype=jnp.int32)
+    q_cu_seqlen = jnp.cumsum(q_seqlen)
+    q_cu_seqlen = jnp.hstack((0, q_cu_seqlen))
+
+    kv_cu_seqlen = q_cu_seqlen
+
+    output, softmax_aux = self_fmha_fwd(qkv, bias, q_cu_seqlen, kv_cu_seqlen, seed, scaling_factor,
                                         dropout_probability, is_causal_masking)
-    return output, (softmax_aux, qkv, q_seqlen, kv_seqlen)
+    return output, (softmax_aux, qkv, q_cu_seqlen, kv_cu_seqlen)
 
 
 def _self_fmha_bwd(
@@ -117,7 +120,7 @@ def _self_fmha_bwd(
                         dtype=jnp.float32).astype(grad.dtype)
     grad_beta = _reshape_softmax(grad_beta, 1, max_seqlen, num_head)
 
-    return grad_qkv, grad_beta, None, None
+    return grad_qkv, grad_beta, None
 
 
 _self_fmha.defvjp(_self_fmha_fwd, _self_fmha_bwd)
@@ -125,8 +128,7 @@ _self_fmha.defvjp(_self_fmha_fwd, _self_fmha_bwd)
 
 def cross_fmha(q: jnp.ndarray,
                kv: jnp.ndarray,
-               q_seqlen: jnp.ndarray,
-               kv_seqlen: jnp.ndarray,
+               mask: jnp.ndarray,
                seed: int,
                scaling_factor: float,
                dropout_probability: float,
@@ -141,8 +143,7 @@ def cross_fmha(q: jnp.ndarray,
     if sharding_type is ShardingType.SINGLE:
         output = _cross_fmha(q,
                              kv,
-                             q_seqlen,
-                             kv_seqlen,
+                             mask,
                              seed=seed,
                              scaling_factor=scaling_factor,
                              dropout_probability=dropout_probability,
@@ -151,12 +152,12 @@ def cross_fmha(q: jnp.ndarray,
         dp_axis_name = "batch"
         tp_axis_name = "model"
 
-        inputs = [q, kv, q_seqlen, kv_seqlen]
+        inputs = [q, kv, mask]
         output_shape = q.shape
         sharding_meta = get_fmha_sharding_meta(sharding_type, [x.shape for x in inputs],
                                                [output_shape],
-                                               dp_dims=([0, 0, 0, 0], [0]),
-                                               tp_dims=([2, 3, None, None], [2]),
+                                               dp_dims=([0, 0, 0], [0]),
+                                               tp_dims=([2, 3, None], [2]),
                                                dp_axis_name=dp_axis_name,
                                                tp_axis_name=tp_axis_name)
 
@@ -177,20 +178,28 @@ def cross_fmha(q: jnp.ndarray,
     return output
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(4, 5, 6, 7))
-def _cross_fmha(q: jnp.ndarray, kv: jnp.ndarray, q_seqlen: jnp.ndarray, kv_seqlen: jnp.ndarray,
-                seed: int, scaling_factor: float, dropout_probability: float,
-                is_causal_masking: bool):
-    output, _ = _cross_fmha_fwd(q, kv, q_seqlen, kv_seqlen, seed, scaling_factor,
-                                dropout_probability, is_causal_masking)
+@partial(jax.custom_vjp, nondiff_argnums=(3, 4, 5, 6))
+def _cross_fmha(q: jnp.ndarray, kv: jnp.ndarray, mask: jnp.ndarray, seed: int,
+                scaling_factor: float, dropout_probability: float, is_causal_masking: bool):
+
+    output, _ = _cross_fmha_fwd(q, kv, mask, seed, scaling_factor, dropout_probability,
+                                is_causal_masking)
     return output
 
 
-def _cross_fmha_fwd(q, kv, q_seqlen, kv_seqlen, seed, scaling_factor, dropout_probability,
-                    is_causal_masking):
-    output, softmax_aux = cross_fmha_fwd(q, kv, q_seqlen, kv_seqlen, seed, scaling_factor,
+def _cross_fmha_fwd(q, kv, mask, seed, scaling_factor, dropout_probability, is_causal_masking):
+
+    q_seqlen = jnp.sum(mask[:, :, :, 0] == 0, axis=(-1, -2), dtype=jnp.int32)
+    q_cu_seqlen = jnp.cumsum(q_seqlen)
+    q_cu_seqlen = jnp.hstack((0, q_cu_seqlen))
+
+    kv_seqlen = jnp.sum(mask[:, :, 0, :] == 0, axis=(-1, -2), dtype=jnp.int32)
+    kv_cu_seqlen = jnp.cumsum(kv_seqlen)
+    kv_cu_seqlen = jnp.hstack((0, kv_cu_seqlen))
+
+    output, softmax_aux = cross_fmha_fwd(q, kv, q_cu_seqlen, kv_cu_seqlen, seed, scaling_factor,
                                          dropout_probability, is_causal_masking)
-    return output, (softmax_aux, q, kv, q_seqlen, kv_seqlen)
+    return output, (softmax_aux, q, kv, q_cu_seqlen, kv_cu_seqlen)
 
 
 def _cross_fmha_bwd(
@@ -215,7 +224,7 @@ def _cross_fmha_bwd(
                                         dropout_probability=dropout_probability,
                                         is_causal_masking=is_causal_masking)
 
-    return grad_q, grad_kv, None, None
+    return grad_q, grad_kv, None
 
 
 _cross_fmha.defvjp(_cross_fmha_fwd, _cross_fmha_bwd)

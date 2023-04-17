@@ -202,16 +202,10 @@ def customcall_self_fmha(qkv, bias, q_token, kv_token, **kwargs):
     else:
         mask = make_attention_mask(q_token > 0, kv_token > 0)
 
-    q_seqlen = jnp.sum(mask[:, :, :, 0], axis=(-1, -2), dtype=jnp.int32)
-    kv_seqlen = jnp.sum(mask[:, :, :, 0], axis=(-1, -2), dtype=jnp.int32)
+    # mask invert
+    mask = (mask == 0)
 
-    q_seqlen_with_zero = jnp.hstack((0, q_seqlen))
-    q_cu_seqlen = jnp.cumsum(q_seqlen_with_zero)
-
-    kv_seqlen_with_zero = jnp.hstack((0, kv_seqlen))
-    kv_cu_seqlen = jnp.cumsum(kv_seqlen_with_zero)
-
-    return self_fmha(qkv, bias, q_cu_seqlen, kv_cu_seqlen, **kwargs)
+    return self_fmha(qkv, bias, mask, **kwargs)
 
 
 def customcall_cross_fmha(q, kv, q_token, kv_token, **kwargs):
@@ -220,16 +214,10 @@ def customcall_cross_fmha(q, kv, q_token, kv_token, **kwargs):
         raise NotImplementedError
     mask = make_attention_mask(q_token > 0, kv_token > 0)
 
-    q_seqlen = jnp.sum(mask[:, :, :, 0], axis=(-1, -2), dtype=jnp.int32)
-    kv_seqlen = jnp.sum(mask[:, :, 0, :], axis=(-1, -2), dtype=jnp.int32)
+    # mask invert
+    mask = (mask == 0)
 
-    q_seqlen_with_zero = jnp.hstack((0, q_seqlen))
-    q_cu_seqlen = jnp.cumsum(q_seqlen_with_zero)
-
-    kv_seqlen_with_zero = jnp.hstack((0, kv_seqlen))
-    kv_cu_seqlen = jnp.cumsum(kv_seqlen_with_zero)
-
-    return cross_fmha(q, kv, q_cu_seqlen, kv_cu_seqlen, **kwargs)
+    return cross_fmha(q, kv, mask, **kwargs)
 
 
 class TestSelfFMHA():
