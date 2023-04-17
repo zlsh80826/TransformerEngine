@@ -205,7 +205,13 @@ def customcall_self_fmha(qkv, bias, q_token, kv_token, **kwargs):
     q_seqlen = jnp.sum(mask[:, :, :, 0], axis=(-1, -2), dtype=jnp.int32)
     kv_seqlen = jnp.sum(mask[:, :, :, 0], axis=(-1, -2), dtype=jnp.int32)
 
-    return self_fmha(qkv, bias, q_seqlen, kv_seqlen, **kwargs)
+    q_seqlen_with_zero = jnp.hstack((0, q_seqlen))
+    q_cu_seqlen = jnp.cumsum(q_seqlen_with_zero)
+
+    kv_seqlen_with_zero = jnp.hstack((0, kv_seqlen))
+    kv_cu_seqlen = jnp.cumsum(kv_seqlen_with_zero)
+
+    return self_fmha(qkv, bias, q_cu_seqlen, kv_cu_seqlen, **kwargs)
 
 
 def customcall_cross_fmha(q, kv, q_token, kv_token, **kwargs):
@@ -217,7 +223,13 @@ def customcall_cross_fmha(q, kv, q_token, kv_token, **kwargs):
     q_seqlen = jnp.sum(mask[:, :, :, 0], axis=(-1, -2), dtype=jnp.int32)
     kv_seqlen = jnp.sum(mask[:, :, 0, :], axis=(-1, -2), dtype=jnp.int32)
 
-    return cross_fmha(q, kv, q_seqlen, kv_seqlen, **kwargs)
+    q_seqlen_with_zero = jnp.hstack((0, q_seqlen))
+    q_cu_seqlen = jnp.cumsum(q_seqlen_with_zero)
+
+    kv_seqlen_with_zero = jnp.hstack((0, kv_seqlen))
+    kv_cu_seqlen = jnp.cumsum(kv_seqlen_with_zero)
+
+    return cross_fmha(q, kv, q_cu_seqlen, kv_cu_seqlen, **kwargs)
 
 
 class TestSelfFMHA():

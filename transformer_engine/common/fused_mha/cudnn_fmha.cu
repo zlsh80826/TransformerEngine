@@ -1084,14 +1084,37 @@ struct FMHADescriptor {
 
 using namespace transformer_engine::fmha;
 
+__global__ void cu_seqlens_to_actual_seqlens(
+  size_t b,
+  int32_t const * const q_cu_seqlens, int32_t const * const kv_cu_seqlens,
+  int32_t *q_seqlens, int32_t *kv_seqlens) {
+
+  size_t tid = threadIdx.x;
+  if (tid < b) {
+    q_seqlens[tid] = q_cu_seqlens[tid + 1] - q_cu_seqlens[tid];
+    kv_seqlens[tid] = kv_cu_seqlens[tid + 1] - kv_cu_seqlens[tid];
+  }
+}
+
 void nvte_fmha_fwd(int64_t b, int64_t h, int64_t s_q, int64_t s_kv, int64_t d,
                    int64_t seed, MHA_Layout layout, float scaling_factor,
                    double dropout_probability, MHA_Bias_Type bias_type,
                    bool is_causal_masking, void *devPtrQ, void *devPtrK,
                    void *devPtrV, void *devPtrS, void *devPtrO,
-                   void *devPtrBias, void *devActualSeqlenQ,
-                   void *devActualSeqlenK, cudnnDataType_t tensorType,
+                   void *devPtrBias, void *devCuSeqlenQ,
+                   void *devCuSeqlenK, void *workspace, cudnnDataType_t tensorType,
                    cudaStream_t stream, cudnnHandle_t handle_) {
+
+  constexpr size_t nthreads_per_block = 128;
+  const size_t grid = (b + nthreads_per_block - 1)/nthreads_per_block;
+  void* devActualSeqlenQ = workspace;
+  void* devActualSeqlenK = workspace + b * sizeof(int32_t);
+  cu_seqlens_to_actual_seqlens<<<grid, nthreads_per_block, 0, stream>>>(b,
+    static_cast<const int32_t*>(devCuSeqlenQ),
+    static_cast<const int32_t*>(devCuSeqlenK),
+    static_cast<int32_t*>(devActualSeqlenQ),
+    static_cast<int32_t*>(devActualSeqlenK));
+                    
   // cudnnHandle_t handle_;
   try {
     // Create cudnn handle
@@ -1286,9 +1309,20 @@ void nvte_fmha_bwd(int64_t b, int64_t h, int64_t s_q, int64_t s_kv, int64_t d,
                    float dropout_probability, bool is_causal_masking,
                    void *devPtrQ, void *devPtrK, void *devPtrV, void *devPtrS,
                    void *devPtrdQ, void *devPtrdK, void *devPtrdV,
-                   void *devPtrdO, void *devPtrdS, void *devActualSeqlenQ,
-                   void *devActualSeqlenK, cudnnDataType_t tensorType,
+                   void *devPtrdO, void *devPtrdS, void *devCuSeqlenQ,
+                   void *devCuSeqlenK, void *workspace, cudnnDataType_t tensorType,
                    cudaStream_t stream, cudnnHandle_t handle_) {
+
+  constexpr size_t nthreads_per_block = 128;
+  const size_t grid = (b + nthreads_per_block - 1)/nthreads_per_block;
+  void* devActualSeqlenQ = workspace;
+  void* devActualSeqlenK = workspace + b * sizeof(int32_t);
+  cu_seqlens_to_actual_seqlens<<<grid, nthreads_per_block, 0, stream>>>(b,
+    static_cast<const int32_t*>(devCuSeqlenQ),
+    static_cast<const int32_t*>(devCuSeqlenK),
+    static_cast<int32_t*>(devActualSeqlenQ),
+    static_cast<int32_t*>(devActualSeqlenK));
+
   // cudnnHandle_t handle_;
   try {
     // Create cudnn handle

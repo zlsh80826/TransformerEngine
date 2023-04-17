@@ -43,8 +43,8 @@ void nvte_fmha_fwd(int64_t b, int64_t h, int64_t s_q, int64_t s_kv, int64_t d,
                    double dropout_probability, MHA_Bias_Type bias_type,
                    bool is_causal_masking, void *devPtrQ, void *devPtrK,
                    void *devPtrV, void *devPtrS, void *devPtrO,
-                   void *devPtrBias, void *devActualSeqlenQ,
-                   void *devActualSeqlenK, cudnnDataType_t tensorType,
+                   void *devPtrBias, void *devCuSeqlenQ,
+                   void *devCuSeqlenK, void* workspace, cudnnDataType_t tensorType,
                    cudaStream_t stream, cudnnHandle_t handle_);
 
 void nvte_fmha_bwd(int64_t b, int64_t h, int64_t s_q, int64_t s_kv, int64_t d,
@@ -52,8 +52,8 @@ void nvte_fmha_bwd(int64_t b, int64_t h, int64_t s_q, int64_t s_kv, int64_t d,
                    float dropout_probability, bool is_causal_masking,
                    void *devPtrQ, void *devPtrK, void *devPtrV, void *devPtrS,
                    void *devPtrdQ, void *devPtrdK, void *devPtrdV,
-                   void *devPtrdO, void *devPtrdS, void *devActualSeqlenQ,
-                   void *devActualSeqlenK, cudnnDataType_t tensorType,
+                   void *devPtrdO, void *devPtrdS, void *devCuSeqlenQ,
+                   void *devCuSeqlenK, void* workspace, cudnnDataType_t tensorType,
                    cudaStream_t stream, cudnnHandle_t handle_);
 
 #ifdef __cplusplus

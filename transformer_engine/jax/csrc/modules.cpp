@@ -756,12 +756,14 @@ void SelfMultiheadAttentionForward(cudaStream_t stream, void **buffers, const ch
 
     auto handle = cudnnExecutionPlanManager::Instance().GetCudnnHandle();
 
+    auto workspace_size = 2 * batch * sizeof(int32_t);
+    auto *workspace = cublasLtMetaManager::Instance().GetWorkspace(workspace_size);
     nvte_fmha_fwd(batch, num_head, max_q_seqlen, max_kv_seqlen, head_dim, descriptor.seed,
                   MHA_Layout::QKV_INTERLEAVED, descriptor.scaling_factor,
                   descriptor.dropout_probability, MHA_Bias_Type::POST_SCALE_BIAS,
                   descriptor.is_causal_masking, qkv, static_cast<char *>(qkv) + qkv_stride,
                   static_cast<char *>(qkv) + 2 * qkv_stride, softmax_aux, output, bias, q_seqlen,
-                  kv_seqlen, TEDTypeToCudnnDataType(descriptor.dtype), stream, handle);
+                  kv_seqlen, workspace, TEDTypeToCudnnDataType(descriptor.dtype), stream, handle);
 }
 
 void SelfMultiheadAttentionBackward(cudaStream_t stream, void **buffers, const char *opaque,
@@ -796,13 +798,15 @@ void SelfMultiheadAttentionBackward(cudaStream_t stream, void **buffers, const c
 
     auto handle = cudnnExecutionPlanManager::Instance().GetCudnnHandle();
 
+    auto workspace_size = 2 * batch * sizeof(int32_t);
+    auto *workspace = cublasLtMetaManager::Instance().GetWorkspace(workspace_size);
     nvte_fmha_bwd(batch, num_head, max_q_seqlen, max_kv_seqlen, head_dim,
                   MHA_Layout::QKV_INTERLEAVED, descriptor.scaling_factor,
                   descriptor.dropout_probability, descriptor.is_causal_masking, qkv,
                   static_cast<char *>(qkv) + qkv_stride, static_cast<char *>(qkv) + 2 * qkv_stride,
                   softmax_aux, dqkv, static_cast<char *>(dqkv) + qkv_stride,
                   static_cast<char *>(dqkv) + 2 * qkv_stride, doutput, dp, q_seqlen, kv_seqlen,
-                  TEDTypeToCudnnDataType(descriptor.dtype), stream, handle);
+                  workspace, TEDTypeToCudnnDataType(descriptor.dtype), stream, handle);
 }
 
 void CrossMultiheadAttentionForward(cudaStream_t stream, void **buffers, const char *opaque,
@@ -834,12 +838,14 @@ void CrossMultiheadAttentionForward(cudaStream_t stream, void **buffers, const c
 
     auto handle = cudnnExecutionPlanManager::Instance().GetCudnnHandle();
 
+    auto workspace_size = 2 * batch * sizeof(int32_t);
+    auto *workspace = cublasLtMetaManager::Instance().GetWorkspace(workspace_size);
     nvte_fmha_fwd(batch, num_head, max_q_seqlen, max_kv_seqlen, head_dim, descriptor.seed,
                   MHA_Layout::KV_INTERLEAVED, descriptor.scaling_factor,
                   descriptor.dropout_probability, MHA_Bias_Type::NO_BIAS,
                   descriptor.is_causal_masking, q, static_cast<char *>(kv),
                   static_cast<char *>(kv) + kv_stride, softmax_aux, output, nullptr, q_seqlen,
-                  kv_seqlen, TEDTypeToCudnnDataType(descriptor.dtype), stream, handle);
+                  kv_seqlen, workspace, TEDTypeToCudnnDataType(descriptor.dtype), stream, handle);
 }
 
 void CrossMultiheadAttentionBackward(cudaStream_t stream, void **buffers, const char *opaque,
@@ -875,12 +881,14 @@ void CrossMultiheadAttentionBackward(cudaStream_t stream, void **buffers, const 
 
     auto handle = cudnnExecutionPlanManager::Instance().GetCudnnHandle();
 
-    nvte_fmha_bwd(batch, num_head, max_q_seqlen, max_kv_seqlen, head_dim,
-                  MHA_Layout::KV_INTERLEAVED, descriptor.scaling_factor,
-                  descriptor.dropout_probability, descriptor.is_causal_masking, q,
-                  static_cast<char *>(kv), static_cast<char *>(kv) + qkv_stride, softmax_aux, dq,
-                  static_cast<char *>(dkv), static_cast<char *>(dkv) + qkv_stride, doutput, dp,
-                  q_seqlen, kv_seqlen, TEDTypeToCudnnDataType(descriptor.dtype), stream, handle);
+    auto workspace_size = 2 * batch * sizeof(int32_t);
+    auto *workspace = cublasLtMetaManager::Instance().GetWorkspace(workspace_size);
+    nvte_fmha_bwd(
+        batch, num_head, max_q_seqlen, max_kv_seqlen, head_dim, MHA_Layout::KV_INTERLEAVED,
+        descriptor.scaling_factor, descriptor.dropout_probability, descriptor.is_causal_masking, q,
+        static_cast<char *>(kv), static_cast<char *>(kv) + qkv_stride, softmax_aux, dq,
+        static_cast<char *>(dkv), static_cast<char *>(dkv) + qkv_stride, doutput, dp, q_seqlen,
+        kv_seqlen, workspace, TEDTypeToCudnnDataType(descriptor.dtype), stream, handle);
 }
 
 }  // namespace jax

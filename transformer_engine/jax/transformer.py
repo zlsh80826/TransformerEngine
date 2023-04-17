@@ -524,6 +524,8 @@ class MultiHeadAttention(nn.Module):
             assert not self.transpose_batch_sequence
             is_causal_masking = (self.attn_type == AttentionType.CAUSAL)
             q_seqlen = jnp.sum(mask[:, :, :, 0] == 0, axis=(-1, -2), dtype=jnp.int32)
+            q_seqlen_with_zero = jnp.hstack((0, q_seqlen))
+            q_cu_seqlen = jnp.cumsum(q_seqlen_with_zero)
             if inputs_q is inputs_kv:
                 qkv_proj = qkv_proj.reshape((*qkv_proj.shape[:-1], self.num_heads, self.head_dim))
                 qkv_sharding_constraint = ('batch', 'length', 'qkv_dim', 'heads', 'kv')
@@ -531,8 +533,8 @@ class MultiHeadAttention(nn.Module):
                                                                     qkv_sharding_constraint)
                 x = self_fmha(qkv_proj,
                               bias,
-                              q_seqlen,
-                              q_seqlen,
+                              q_cu_seqlen,
+                              q_cu_seqlen,
                               seed=0,
                               scaling_factor=scale_factor,
                               dropout_probability=self.dropout_rate,
@@ -547,10 +549,12 @@ class MultiHeadAttention(nn.Module):
                 query = nn_partitioning.with_sharding_constraint(query, q_sharding_constraint)
                 kv_proj = nn_partitioning.with_sharding_constraint(kv_proj, kv_sharding_constraint)
                 kv_seqlen = jnp.sum(mask[:, :, 0, :] == 0, axis=(-1, -2), dtype=jnp.int32)
+                kv_seqlen_with_zero = jnp.hstack((0, kv_seqlen))
+                kv_cu_seqlen = jnp.cumsum(kv_seqlen_with_zero)
                 x = cross_fmha(query,
                                kv_proj,
-                               q_seqlen,
-                               kv_seqlen,
+                               q_cu_seqlen,
+                               kv_cu_seqlen,
                                seed=0,
                                scaling_factor=scale_factor,
                                dropout_probability=self.dropout_rate,
