@@ -414,6 +414,8 @@ class MultiHeadAttention(nn.Module):
             warnings.warn(
                 f"Fused attention is not enabled, " \
                 f"{reason}fall back to unfused attention")
+        else:
+            print("Fused attn is enabled.", flush=True)
 
         residual = inputs_q
         if self.fuse_qkv:
