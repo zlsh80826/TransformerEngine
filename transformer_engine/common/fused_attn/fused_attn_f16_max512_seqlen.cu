@@ -1431,7 +1431,7 @@ void fused_attn_max_512_bwd_qkvpacked(size_t batch, size_t max_seqlen, size_t nu
             return;
         }
     } else if (workspace_size == 0) {
-        workspace->data.shape = {1};
+        workspace->data.shape = {256};
         workspace->data.dtype = DType::kByte;
         return;
     }
@@ -1494,7 +1494,7 @@ void fused_attn_max_512_bwd_kvpacked(size_t batch, size_t q_max_seqlen, size_t k
             return;
         }
     } else if (workspace_size == 0) {
-        workspace->data.shape = {1};
+        workspace->data.shape = {256};
         workspace->data.dtype = DType::kByte;
         return;
     }
