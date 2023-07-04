@@ -2,7 +2,6 @@
 #
 # See LICENSE for license information.
 
-from typing import Optional
 import math
 
 import jax
@@ -14,8 +13,6 @@ from flax.linen import combine_masks
 from flax.linen import dot_product_attention
 from flax.linen import make_attention_mask
 from flax.linen import make_causal_mask
-from jax import lax
-from jax import nn as jax_nn
 from jax import value_and_grad, jit
 
 from transformer_engine.jax.fused_attn import AttnBiasType, AttnMaskType
@@ -141,6 +138,7 @@ class TestSelfFusedAttnMax512():
         self.dropout_probability = dropout_probability
         self.dropout_rng = jax.random.PRNGKey(0) if self.dropout_probability > 0 else None
         self.attn_bias_type = attn_bias_type
+        self.attn_mask_type = attn_mask_type
         self.is_training = is_training
 
     @pytest.mark.parametrize('b, s, h, d', SELF_CASES)
@@ -185,9 +183,8 @@ class TestSelfFusedAttnMax512():
                     customcall_self_fused_attn, qkv, bias, q_token, kv_token, dropout_rng, **kwargs
                 ), (0, 1)))
 
-        primitive_out, (primitive_dqkv,
-                        primitive_dbias) = jitted_primitive(self.qkv, self.bias, self.q_token,
-                                                            self.kv_token, self.dropout_rng)
+        _, (_, _) = jitted_primitive(self.qkv, self.bias, self.q_token, self.kv_token,
+                                     self.dropout_rng)
 
     @pytest.mark.parametrize('b, s, h, d', SELF_CASES)
     @pytest.mark.parametrize('attn_bias_type', [AttnBiasType.NO_BIAS, AttnBiasType.POST_SCALE_BIAS])
@@ -201,7 +198,7 @@ class TestSelfFusedAttnMax512():
                      is_training, pad_ratio):
         # dropout can't get the bitmatch result
         if is_training and dropout_probability > 0.:
-            return
+            pytest.skip("Skip dropout_p > 0 and is_training")
 
         self.set_input(b,
                        s,
@@ -389,6 +386,7 @@ class TestCrossFusedAttnMax512():
         self.dropout_probability = dropout_probability
         self.dropout_rng = jax.random.PRNGKey(0) if self.dropout_probability > 0 else None
         self.attn_bias_type = AttnBiasType.NO_BIAS
+        self.attn_mask_type = attn_mask_type
         self.is_training = is_training
 
     @pytest.mark.parametrize('b, s_q, s_kv, h, d', CROSS_CASES)
