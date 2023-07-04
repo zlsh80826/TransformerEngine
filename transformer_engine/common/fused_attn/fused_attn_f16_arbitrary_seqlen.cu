@@ -373,7 +373,7 @@ createDropoutForward(int64_t b, int64_t h, int64_t s_q, int64_t s_kv, int64_t d,
             .build();
     // scale after dropout
     auto scaleDropoutTensor = tensor_create(
-                            tensorType, D_CONST_ID, scale_dim,
+                            CUDNN_DATA_FLOAT, D_CONST_ID, scale_dim,
                             scale_stride, false, true);  // is by value
     // after Scale
     auto afterScaleTensor = tensor_create(
@@ -1185,7 +1185,7 @@ void fused_attn_arbitrary_seqlen_fwd_qkvpacked(
 
     // QKV shape is [b, s, 3, h, d]
     void *devPtrQKV = input_QKV->data.dptr;
-    const auto stride = num_head * head_dim;
+    const auto stride = 2 * num_head * head_dim;
 
     void *devPtrQ = static_cast<void *>(devPtrQKV);
     void *devPtrK = static_cast<void *>(static_cast<int8_t *>(devPtrQKV) + stride);
@@ -1256,7 +1256,7 @@ void fused_attn_arbitrary_seqlen_bwd_qkvpacked(size_t batch, size_t max_seqlen, 
     // QKV shape is [b, s, 3, h, d]
     void *devPtrQKV = input_QKV->data.dptr;
 
-    auto stride = num_head * head_dim;
+    auto stride = 2 * num_head * head_dim;
     void *devPtrQ = devPtrQKV;
     void *devPtrK = static_cast<void *>(static_cast<int8_t *>(devPtrQKV) + stride);
     void *devPtrV = static_cast<void *>(static_cast<int8_t *>(devPtrQKV) + 2 * stride);

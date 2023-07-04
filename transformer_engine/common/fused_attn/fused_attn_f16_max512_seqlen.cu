@@ -1254,7 +1254,7 @@ void fused_attn_max_512_fwd_qkvpacked(
 
     // QKV shape is [b, s, 3, h, d]
     void *devPtrQKV = input_QKV->data.dptr;
-    const auto stride = num_head * head_dim;
+    const auto stride = 2 * num_head * head_dim;
 
     void *devPtrQ = static_cast<void *>(devPtrQKV);
     void *devPtrK = static_cast<void *>(static_cast<int8_t *>(devPtrQKV) + stride);
@@ -1328,7 +1328,7 @@ void fused_attn_max_512_fwd_kvpacked(size_t batch, size_t q_max_seqlen, size_t k
     void *devPtrQ = input_Q->data.dptr;
 
     // KV shape is [b, s, 2, h, d]
-    const auto stride = num_head * head_dim;
+    const auto stride = 2 * num_head * head_dim;
     void *devPtrK = input_KV->data.dptr;
     void *devPtrV = static_cast<void *>(static_cast<int8_t *>(devPtrK) + stride);
 
@@ -1399,7 +1399,7 @@ void fused_attn_max_512_bwd_qkvpacked(size_t batch, size_t max_seqlen, size_t nu
     // QKV shape is [b, s, 3, h, d]
     void *devPtrQKV = input_QKV->data.dptr;
 
-    auto stride = num_head * head_dim;
+    auto stride = 2 * num_head * head_dim;
     void *devPtrQ = devPtrQKV;
     void *devPtrK = static_cast<void *>(static_cast<int8_t *>(devPtrQKV) + stride);
     void *devPtrV = static_cast<void *>(static_cast<int8_t *>(devPtrQKV) + 2 * stride);
@@ -1459,7 +1459,7 @@ void fused_attn_max_512_bwd_kvpacked(size_t batch, size_t q_max_seqlen, size_t k
 
     // Q shape is [b, s, h, d]
     // KV shape is [b, s, 2, h, d]
-    auto stride = num_head * head_dim;
+    auto stride = 2 * num_head * head_dim;
     void *devPtrQ = input_Q->data.dptr;
     void *devPtrK = input_KV->data.dptr;
     void *devPtrV = static_cast<void *>(static_cast<int8_t *>(devPtrK) + stride);
