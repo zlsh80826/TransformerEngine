@@ -765,6 +765,8 @@ void SelfFusedAttnMax512Forward(cudaStream_t stream, void **buffers, const char 
     NVTE_CHECK(q_max_seqlen == kv_max_seqlen,
                "q_max_seqlen should be equal to kv_max_seqlen in the self attention.");
 
+    cudaMemsetAsync(output, 0, batch * q_max_seqlen * num_head * head_dim * 2, stream);
+
     auto dtype = descriptor.dtype;
     auto qkv_shape = std::vector<size_t>{batch * q_max_seqlen, 3, num_head, head_dim};
     auto bias_shape = std::vector<size_t>{1, num_head, q_max_seqlen, kv_max_seqlen};
