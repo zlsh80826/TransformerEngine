@@ -685,12 +685,18 @@ void fused_attn_max_512_fwd_impl(
             NVTE_CHECK(bias_type != NVTE_Bias_Type::NVTE_PRE_SCALE_BIAS,
                        "NVTE_Bias_Type::NVTE_PRE_SCALE_BIAS has not been implemented.");
 
+            std::shared_ptr<cudnn_frontend::Tensor> maskInput;
+
             if (bias_type == NVTE_Bias_Type::NVTE_POST_SCALE_BIAS) {
-                createBias(b, h, s_q, s_kv, d, layout, tensorType, ops, bmm1_output);
+                auto bias_output =
+                    createBias(b, h, s_q, s_kv, d, layout, tensorType, ops, bmm1_output);
+                maskInput = std::make_shared<cudnn_frontend::Tensor>(std::move(bias_output));
+            } else {
+                maskInput = std::make_shared<cudnn_frontend::Tensor>(std::move(bmm1_output));
             }
 
             auto mask_output = createMask(b, h, s_q, s_kv, d, layout, mask_type, tensorType, ops,
-                                          bmm1_output, false);
+                                          *maskInput.get(), false);
 
             NVTE_CHECK(dropout_probability != 1.0f, "Dropout probability cannot be 1.0.");
 
@@ -1381,10 +1387,10 @@ void fused_attn_max_512_bwd_qkvpacked(size_t batch, size_t max_seqlen, size_t nu
                                       size_t head_dim, float attn_scale, float p_dropout,
                                       NVTE_QKV_Layout qkv_layout, NVTE_Bias_Type bias_type,
                                       NVTE_Mask_Type mask_type, const Tensor *input_QKV,
-                                      const Tensor *input_dO, Tensor *output_S,
-                                      Tensor *output_dQKV, Tensor *output_dBias,
-                                      const Tensor *cu_seqlens, Tensor *workspace,
-                                      cudaStream_t stream, cudnnHandle_t handle) {
+                                      const Tensor *input_dO, Tensor *output_S, Tensor *output_dQKV,
+                                      Tensor *output_dBias, const Tensor *cu_seqlens,
+                                      Tensor *workspace, cudaStream_t stream,
+                                      cudnnHandle_t handle) {
     using namespace transformer_engine;
 
     NVTE_CHECK(qkv_layout == NVTE_QKV_Layout::NVTE_QKV_INTERLEAVED,
@@ -1442,8 +1448,8 @@ void fused_attn_max_512_bwd_kvpacked(size_t batch, size_t q_max_seqlen, size_t k
                                      float p_dropout, NVTE_QKV_Layout qkv_layout,
                                      NVTE_Bias_Type bias_type, NVTE_Mask_Type mask_type,
                                      const Tensor *input_Q, const Tensor *input_KV,
-                                     const Tensor *input_dO, Tensor *output_S,
-                                     Tensor *output_dQ, Tensor *output_dKV, Tensor *output_dBias,
+                                     const Tensor *input_dO, Tensor *output_S, Tensor *output_dQ,
+                                     Tensor *output_dKV, Tensor *output_dBias,
                                      const Tensor *q_cu_seqlens, const Tensor *kv_cu_seqlens,
                                      Tensor *workspace, cudaStream_t stream, cudnnHandle_t handle) {
     using namespace transformer_engine;
