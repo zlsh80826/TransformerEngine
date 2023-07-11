@@ -424,7 +424,9 @@ class MultiHeadAttention(nn.Module):
                 f"{reason}fall back to unfused attention")
 
         residual = inputs_q
+        assert self.fuse_qkv, "debugging"
         if self.fuse_qkv:
+            assert inputs_q is inputs_kv, "debugging"
             if inputs_q is inputs_kv:
                 qkv_proj, ln_out = LayerNormDenseGeneral(
                     enable_layernorm=not self.output_layernorm,
@@ -447,86 +449,16 @@ class MultiHeadAttention(nn.Module):
                     ),
                     name='qkv',
                     dtype=self.dtype)(inputs_q)
-                if not use_fused_attn:
-                    query, key, value = jnp.split(qkv_proj, [1, 2], axis=-2)
-            else:
-                query, ln_out = LayerNormDenseGeneral(
-                    enable_layernorm=not self.output_layernorm,
-                    layernorm_type=self.layernorm_type,
-                    zero_centered_gamma=self.zero_centered_gamma,
-                    epsilon=self.layernorm_epsilon,
-                    axis=-1,
-                    features=self.num_heads * self.head_dim,
-                    sharding_type=first_sharding_type,
-                    transpose_batch_sequence=self.transpose_batch_sequence,
-                    return_layernorm_output=self.apply_residual_connection_post_layernorm,
-                    scale_axes=('embed',),
-                    kernel_axes=('embed', 'joined_kv'),
-                    use_bias=self.use_bias,
-                    bias_init=self.bias_init,
-                    bias_axes=('joined_kv',),
-                    dtype=self.dtype,
-                    kernel_init=query_init,
-                    name='query')(inputs_q)
-                kv_proj = DenseGeneral(axis=-1,
-                                       features=(2, self.num_heads * self.head_dim),
-                                       sharding_type=first_sharding_type,
-                                       transpose_batch_sequence=self.transpose_batch_sequence,
-                                       kernel_axes=('embed', 'kv_dim', 'joined_kv'),
-                                       kernel_init=kv_init,
-                                       use_bias=self.use_bias,
-                                       bias_init=self.bias_init,
-                                       bias_axes=(
-                                           'kv_dim',
-                                           'joined_kv',
-                                       ),
-                                       name='kv',
-                                       dtype=self.dtype)(inputs_kv)
-                if not use_fused_attn:
-                    key, value = jnp.split(kv_proj, [1], axis=-2)
-        else:
-            kv_projection = functools.partial(
-                DenseGeneral,
-                axis=-1,
-                features=self.num_heads * self.head_dim,
-                sharding_type=first_sharding_type,
-                transpose_batch_sequence=self.transpose_batch_sequence,
-                kernel_axes=('embed', 'joined_kv'),
-                use_bias=self.use_bias,
-                bias_init=self.bias_init,
-                bias_axes=('joined_kv',),
-                dtype=self.dtype)
-            query, ln_out = LayerNormDenseGeneral(
-                enable_layernorm=not self.output_layernorm,
-                layernorm_type=self.layernorm_type,
-                zero_centered_gamma=self.zero_centered_gamma,
-                epsilon=self.layernorm_epsilon,
-                axis=-1,
-                features=self.num_heads * self.head_dim,
-                sharding_type=first_sharding_type,
-                transpose_batch_sequence=self.transpose_batch_sequence,
-                return_layernorm_output=True,
-                scale_axes=('embed',),
-                kernel_axes=('embed', 'joined_kv'),
-                use_bias=self.use_bias,
-                bias_init=self.bias_init,
-                bias_axes=('joined_kv',),
-                dtype=self.dtype,
-                kernel_init=query_init,
-                name='query')(inputs_q)
-
-            if inputs_q is inputs_kv:
-                assert ln_out is not None
-                inputs_kv = ln_out
-
-            key = kv_projection(kernel_init=self.kernel_init, name='key')(inputs_kv)
-            value = kv_projection(kernel_init=self.kernel_init, name='value')(inputs_kv)
+                # if not use_fused_attn:
+                # query, key, value = jnp.split(qkv_proj, [1, 2], axis=-2)
 
         if self.apply_residual_connection_post_layernorm:
             assert ln_out is not None
             residual = ln_out
 
-        if not use_fused_attn:
+        def impl(mdl, qkv_proj, decode, deterministic, use_fused_attn):
+            # if not use_fused_attn:
+            query, key, value = jnp.split(qkv_proj, [1, 2], axis=-2)
             query = query.reshape((query.shape[0], query.shape[1], self.num_heads, self.head_dim))
             key = key.reshape((key.shape[0], key.shape[1], self.num_heads, self.head_dim))
             value = value.reshape((value.shape[0], value.shape[1], self.num_heads, self.head_dim))
@@ -538,79 +470,40 @@ class MultiHeadAttention(nn.Module):
             key = nn_partitioning.with_sharding_constraint(key, qkv_sharding_constraint)
             value = nn_partitioning.with_sharding_constraint(value, qkv_sharding_constraint)
 
-        if decode:
-            is_initialized = self.has_variable('cache', 'cached_key')
+            assert not decode
 
-            cached_key = self.variable('cache', 'cached_key', jnp.zeros, key.shape, key.dtype)
-            cached_value = self.variable('cache', 'cached_value', jnp.zeros, value.shape,
-                                         value.dtype)
-            cache_index = self.variable('cache', 'cache_index',
-                                        lambda: jnp.array(0, dtype=jnp.int32))
-            if is_initialized:
-                if self.transpose_batch_sequence:
-                    length, batch, num_heads, head_dim = cached_key.value.shape
-                    expected_shape = (1, batch, num_heads, head_dim)
-                    one_hot_indices_shape = (length, 1, 1, 1)
-                else:
-                    batch, length, num_heads, head_dim = cached_key.value.shape
-                    expected_shape = (batch, 1, num_heads, head_dim)
-                    one_hot_indices_shape = (1, length, 1, 1)
+            scale_factor = 1.0 / sqrt(self.head_dim) if self.scale_attn_logits else 1.0
 
-                # Sanity shape check of cached key against input query.
-                if expected_shape != query.shape:
-                    raise ValueError(
-                        'Autoregressive cache shape error, '
-                        f"expected query shape {expected_shape} instead got {query.shape}.")
+            dropout_rng = None
+            if not deterministic and self.dropout_rate > 0.:
+                dropout_rng = self.make_rng(self.dropout_rng_name)
 
-                cur_index = cache_index.value
-                one_hot_indices = jax_nn.one_hot(cur_index, length, dtype=key.dtype)
-                one_hot_indices = jnp.reshape(one_hot_indices, one_hot_indices_shape)
-                key = cached_key.value + key * one_hot_indices
-                value = cached_value.value + value * one_hot_indices
-                cached_key.value = key
-                cached_value.value = value
-                cache_index.value = cache_index.value + 1
+            if use_fused_attn:
+                assert mask is not None and mask.ndim == 4    # (b, 1, s_q, s_kv)
+                assert not self.transpose_batch_sequence
 
-                mask = combine_masks(
-                    mask, jnp.broadcast_to(jnp.arange(length) > cur_index, (batch, 1, 1, length)))
+                seed = None
+                if dropout_rng is not None:
+                    seed = jax.random.split(dropout_rng, len(jax.devices()))
+                    # ensure the old key never used
+                    del dropout_rng
 
-                if bias is not None:
-                    bias = dynamic_vector_slice_in_dim(jnp.squeeze(bias, axis=0),
-                                                       jnp.reshape(cur_index, (-1)), 1, -2)
+                # TODO(rewang): make it configurable for pre_scale_bias
+                attn_bias_type = AttnBiasType.NO_BIAS if bias is None else AttnBiasType.POST_SCALE_BIAS
 
-        scale_factor = 1.0 / sqrt(self.head_dim) if self.scale_attn_logits else 1.0
+                def canonicalize_attn_mask_type(attn_mask_type):
+                    """
+                    Convert the string to AttnMaskType
+                    """
+                    if attn_mask_type == 'causal':
+                        return AttnMaskType.CAUSAL_MASK
+                    if attn_mask_type == 'padding':
+                        return AttnMaskType.PADDING_MASK
+                    raise ValueError(f"Unsupported {attn_mask_type=}, "
+                                    "supported attn_mask_type = {'causal', 'padding'}")
 
-        dropout_rng = None
-        if not deterministic and self.dropout_rate > 0.:
-            dropout_rng = self.make_rng(self.dropout_rng_name)
+                attn_mask_type = canonicalize_attn_mask_type(self.attn_mask_type)
 
-        if use_fused_attn:
-            assert mask is not None and mask.ndim == 4    # (b, 1, s_q, s_kv)
-            assert not self.transpose_batch_sequence
-
-            seed = None
-            if dropout_rng is not None:
-                seed = jax.random.split(dropout_rng, len(jax.devices()))
-                # ensure the old key never used
-                del dropout_rng
-
-            # TODO(rewang): make it configurable for pre_scale_bias
-            attn_bias_type = AttnBiasType.NO_BIAS if bias is None else AttnBiasType.POST_SCALE_BIAS
-
-            def canonicalize_attn_mask_type(attn_mask_type):
-                """
-                Convert the string to AttnMaskType
-                """
-                if attn_mask_type == 'causal':
-                    return AttnMaskType.CAUSAL_MASK
-                if attn_mask_type == 'padding':
-                    return AttnMaskType.PADDING_MASK
-                raise ValueError(f"Unsupported {attn_mask_type=}, "
-                                 "supported attn_mask_type = {'causal', 'padding'}")
-
-            attn_mask_type = canonicalize_attn_mask_type(self.attn_mask_type)
-
-            if inputs_q is inputs_kv:
                 qkv_proj = qkv_proj.reshape((*qkv_proj.shape[:-1], self.num_heads, self.head_dim))
                 qkv_sharding_constraint = ('batch', 'length', 'qkv_dim', 'heads', 'kv')
                 qkv_proj = nn_partitioning.with_sharding_constraint(qkv_proj,
@@ -626,55 +519,61 @@ class MultiHeadAttention(nn.Module):
                                     is_training=not deterministic,
                                     sharding_type=first_sharding_type)
             else:
-                assert bias is None
-                query = query.reshape((*query.shape[:-1], self.num_heads, self.head_dim))
-                kv_proj = kv_proj.reshape((*kv_proj.shape[:-1], self.num_heads, self.head_dim))
-                q_sharding_constraint = ('batch', 'length', 'heads', 'kv')
-                kv_sharding_constraint = ('batch', 'length', 'kv_dim', 'heads', 'kv')
-                query = nn_partitioning.with_sharding_constraint(query, q_sharding_constraint)
-                kv_proj = nn_partitioning.with_sharding_constraint(kv_proj, kv_sharding_constraint)
+                def convert_to_softmax_type(attn_mask_type, mask):
+                    """
+                    Convert the string to SoftmaxType
+                    """
+                    if attn_mask_type == 'causal':
+                        return SoftmaxType.SCALED_UPPER_TRIANG_MASKED
+                    if attn_mask_type == 'padding':
+                        if mask is not None:
+                            return SoftmaxType.SCALED_MASKED
+                        return SoftmaxType.SCALED
+                    raise ValueError(f"Unsupported {attn_mask_type=}, "
+                                    "supported attn_mask_type = {'causal', 'padding'}")
 
-                x = cross_fused_attn(query,
-                                     kv_proj,
-                                     mask,
-                                     seed,
-                                     attn_bias_type=attn_bias_type,
-                                     attn_mask_type=attn_mask_type,
-                                     scaling_factor=scale_factor,
-                                     dropout_probability=self.dropout_rate,
-                                     is_training=not deterministic,
-                                     sharding_type=first_sharding_type)
-        else:
+                softmax_type = convert_to_softmax_type(self.attn_mask_type, mask)
 
-            def convert_to_softmax_type(attn_mask_type, mask):
-                """
-                Convert the string to SoftmaxType
-                """
-                if attn_mask_type == 'causal':
-                    return SoftmaxType.SCALED_UPPER_TRIANG_MASKED
-                if attn_mask_type == 'padding':
-                    if mask is not None:
-                        return SoftmaxType.SCALED_MASKED
-                    return SoftmaxType.SCALED
-                raise ValueError(f"Unsupported {attn_mask_type=}, "
-                                 "supported attn_mask_type = {'causal', 'padding'}")
+                x = core_attention(query,
+                                key,
+                                value,
+                                scale_factor=scale_factor,
+                                transpose_batch_sequence=self.transpose_batch_sequence,
+                                softmax_type=softmax_type,
+                                softmax_sharding_type=first_sharding_type,
+                                mask=mask,
+                                bias=bias,
+                                dropout_rng=dropout_rng,
+                                dropout_rate=self.dropout_rate,
+                                deterministic=deterministic,
+                                dtype=self.dtype,
+                                float32_logits=self.float32_logits)
+            return x
 
-            softmax_type = convert_to_softmax_type(self.attn_mask_type, mask)
+        fused_impl = functools.partial(impl, decode=decode, deterministic=deterministic,
+            use_fused_attn=True)
+        unfused_impl = functools.partial(impl, decode=decode, deterministic=deterministic,
+            use_fused_attn=False)
 
-            x = core_attention(query,
-                               key,
-                               value,
-                               scale_factor=scale_factor,
-                               transpose_batch_sequence=self.transpose_batch_sequence,
-                               softmax_type=softmax_type,
-                               softmax_sharding_type=first_sharding_type,
-                               mask=mask,
-                               bias=bias,
-                               dropout_rng=dropout_rng,
-                               dropout_rate=self.dropout_rate,
-                               deterministic=deterministic,
-                               dtype=self.dtype,
-                               float32_logits=self.float32_logits)
+        fused_x = fused_impl(self, qkv_proj)
+        unfused_x = unfused_impl(self, qkv_proj)
+
+        def _check(actual, desired, rtol=1e-3, atol=1e-3):
+            def good(ret):
+                # jax.debug.print("")
+                pass
+            def bad(ret):
+                nsize = jnp.size(ret)
+                mismatch = nsize - ret.sum()
+                mismatch_rate = mismatch/nsize*100
+                jax.debug.print("Mismatch rate: {}/{} = {}%, ", mismatch, nsize, mismatch_rate)
+            ret = jnp.isclose(actual, desired, rtol, atol)
+            # ret.all() means allclose
+            jax.lax.cond(ret.all(), good, bad, ret)
+
+        _check(fused_x, unfused_x)
+
+        x = unfused_x
 
         x = x.reshape((x.shape[0], x.shape[1], x.shape[2] * x.shape[3]))
 
