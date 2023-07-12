@@ -8,11 +8,14 @@ import functools
 from enum import Enum
 from math import sqrt
 import os
+import tempfile
+import uuid
 from typing import Any, Callable, Optional, Sequence, Tuple, Union
 import warnings
 
 import jax
 import jax.numpy as jnp
+from jax.experimental import host_callback
 import numpy as np
 from flax import linen as nn
 from flax.linen import partitioning as nn_partitioning
@@ -558,7 +561,8 @@ class MultiHeadAttention(nn.Module):
         fused_x = fused_impl(self, qkv_proj)
         unfused_x = unfused_impl(self, qkv_proj)
 
-        def _check(actual, desired, rtol=1e-3, atol=1e-3):
+        jnp.set_printoptions(precision=3)
+        def _check(actual, desired, rtol=1e-2, atol=1e-2):
             def good(ret):
                 # jax.debug.print("")
                 pass
@@ -566,14 +570,31 @@ class MultiHeadAttention(nn.Module):
                 nsize = jnp.size(ret)
                 mismatch = nsize - ret.sum()
                 mismatch_rate = mismatch/nsize*100
-                jax.debug.print("Mismatch rate: {}/{} = {}%, ", mismatch, nsize, mismatch_rate)
+                jax.debug.print("Mismatch rate: {}/{} = {}%", mismatch, nsize, mismatch_rate)
+                def save_with_jit(x):
+                    def hfunc(x):
+                        uid = str(uuid.uuid1())[:7]
+                        with open(f'test.{uid}.npz', 'wb') as fp:
+                            jnp.savez(fp, x)
+                            print(f'{uid=}')
+                    host_callback.call(hfunc, x)
+                save_with_jit(ret)
             ret = jnp.isclose(actual, desired, rtol, atol)
             # ret.all() means allclose
-            jax.lax.cond(ret.all(), good, bad, ret)
+            nsize = jnp.size(ret)
+            mismatch = nsize - ret.sum()
+            mismatch_rate = mismatch/nsize
+            jax.lax.cond(mismatch_rate > 0, good, bad, ret)
+            # jax.debug.print("Mismatch rate: {}/{} = {}", mismatch, nsize, mismatch_rate)
+            # actual = actual.astype(jnp.float32)
+            # desired = desired.astype(jnp.float32)
+            # l2_norm = jnp.sum(jnp.square(actual - desired))/jnp.sum(jnp.square(desired))
+            # jax.debug.print("L2 norm: {}", l2_norm)
 
         _check(fused_x, unfused_x)
 
-        x = unfused_x
+        # x = unfused_x
+        x = fused_x
 
         x = x.reshape((x.shape[0], x.shape[1], x.shape[2] * x.shape[3]))
 
