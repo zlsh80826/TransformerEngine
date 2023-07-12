@@ -8,8 +8,7 @@ import functools
 from enum import Enum
 from math import sqrt
 import os
-import tempfile
-import uuid
+import random
 from typing import Any, Callable, Optional, Sequence, Tuple, Union
 import warnings
 
@@ -562,36 +561,35 @@ class MultiHeadAttention(nn.Module):
         unfused_x = unfused_impl(self, qkv_proj)
 
         jnp.set_printoptions(precision=3)
-        def _check(actual, desired, rtol=1e-2, atol=1e-2):
-            def good(ret):
-                # jax.debug.print("")
+        def _check(qkv_proj, fused_x, unfused_x, rtol=1e-2, atol=1e-2):
+            def good(ret, qkv_proj, fused_x, unfused_x):
                 pass
-            def bad(ret):
+
+            def bad(ret, qkv_proj, fused_x, unfused_x):
                 nsize = jnp.size(ret)
                 mismatch = nsize - ret.sum()
-                mismatch_rate = mismatch/nsize*100
+                mismatch_rate = mismatch/nsize * 100
                 jax.debug.print("Mismatch rate: {}/{} = {}%", mismatch, nsize, mismatch_rate)
-                def save_with_jit(x):
-                    def hfunc(x):
-                        uid = str(uuid.uuid1())[:7]
+                def save_with_jit(x, qkv_proj, fused_x, unfused_x):
+                    def hfunc(l):
+                        qkv_proj, fused_x, unfused_x = l
+                        uid = random.choice(list(range(10)))
                         with open(f'test.{uid}.npz', 'wb') as fp:
-                            jnp.savez(fp, x)
-                            print(f'{uid=}')
-                    host_callback.call(hfunc, x)
-                save_with_jit(ret)
-            ret = jnp.isclose(actual, desired, rtol, atol)
-            # ret.all() means allclose
+                            jnp.savez(fp, qkv_proj, fused_x, unfused_x)
+                    host_callback.call(hfunc, [qkv_proj, fused_x, unfused_x])
+                save_with_jit(ret, qkv_proj, fused_x, unfused_x)
+            ret = jnp.isclose(fused_x, unfused_x, rtol, atol)
             nsize = jnp.size(ret)
             mismatch = nsize - ret.sum()
             mismatch_rate = mismatch/nsize
-            jax.lax.cond(mismatch_rate > 0, good, bad, ret)
+            jax.lax.cond(mismatch_rate < 0.05, good, bad, ret, qkv_proj, fused_x, unfused_x)
             # jax.debug.print("Mismatch rate: {}/{} = {}", mismatch, nsize, mismatch_rate)
             # actual = actual.astype(jnp.float32)
             # desired = desired.astype(jnp.float32)
             # l2_norm = jnp.sum(jnp.square(actual - desired))/jnp.sum(jnp.square(desired))
             # jax.debug.print("L2 norm: {}", l2_norm)
 
-        _check(fused_x, unfused_x)
+        _check(qkv_proj, fused_x, unfused_x)
 
         # x = unfused_x
         x = fused_x
