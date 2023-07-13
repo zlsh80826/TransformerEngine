@@ -136,41 +136,67 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
                                                          dropout_probability=dropout_probability,
                                                          is_training=is_training)
 
-    query, key, value = jnp.split(qkv, [1, 2], axis=-3)
-    query = jnp.reshape(query, [*qkv.shape[:2], *qkv.shape[-2:]])
-    key = jnp.reshape(key, [*qkv.shape[:2], *qkv.shape[-2:]])
-    value = jnp.reshape(value, [*qkv.shape[:2], *qkv.shape[-2:]])
+    # query, key, value = jnp.split(qkv, [1, 2], axis=-3)
+    # query = jnp.reshape(query, [*qkv.shape[:2], *qkv.shape[-2:]])
+    # key = jnp.reshape(key, [*qkv.shape[:2], *qkv.shape[-2:]])
+    # value = jnp.reshape(value, [*qkv.shape[:2], *qkv.shape[-2:]])
 
-    unfused_output = dot_product_attention(query,
-                                   key,
-                                   value,
-                                   bias=bias,
-                                   mask=(mask == 0),
-                                   deterministic=(not is_training),
-                                   dropout_rate=dropout_probability,
-                                   dropout_rng=seed,
-                                   dtype=qkv.dtype)
+    # unfused_output = dot_product_attention(query,
+    #                                key,
+    #                                value,
+    #                                bias=bias,
+    #                                mask=(mask == 0),
+    #                                deterministic=(not is_training),
+    #                                dropout_rate=dropout_probability,
+    #                                dropout_rng=seed,
+    #                                dtype=qkv.dtype)
+    print('Use fused fwd', flush=True)
 
-    return unfused_output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
+    return output, (qkv, softmax_aux, rng_state, output, cu_seqlen, bias, mask, seed)
 
 
 def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout_probability,
                          is_training, ctx, grad):
-    qkv, softmax_aux, rng_state, output, cu_seqlen = ctx
+    qkv, softmax_aux, rng_state, output, cu_seqlen, bias, mask, seed = ctx
 
     doutput = grad
 
-    grad_qkv, grad_bias = self_fused_attn_bwd(qkv,
-                                              softmax_aux,
-                                              rng_state,
-                                              output,
-                                              doutput,
-                                              cu_seqlen,
-                                              attn_bias_type=attn_bias_type.value,
-                                              attn_mask_type=attn_mask_type.value,
-                                              scaling_factor=scaling_factor,
-                                              dropout_probability=dropout_probability,
-                                              is_training=is_training)
+    # grad_qkv, grad_bias = self_fused_attn_bwd(qkv,
+    #                                           softmax_aux,
+    #                                           rng_state,
+    #                                           output,
+    #                                           doutput,
+    #                                           cu_seqlen,
+    #                                           attn_bias_type=attn_bias_type.value,
+    #                                           attn_mask_type=attn_mask_type.value,
+    #                                           scaling_factor=scaling_factor,
+    #                                           dropout_probability=dropout_probability,
+    #                                           is_training=is_training)
+
+    assert bias is None, "debugging..."
+    grad_bias = None
+
+    query, key, value = jnp.split(qkv, [1, 2], axis=-3)
+    query_squeezed = jnp.squeeze(query)
+    key_squeezed = jnp.squeeze(key)
+    value_squeezed = jnp.squeeze(value)
+
+    fwd_func = partial(dot_product_attention,
+        bias=bias,
+        mask=(mask == 0),
+        deterministic=(not is_training),
+        dropout_rate=dropout_probability, dropout_rng=seed, dtype=qkv.dtype)
+
+    output, grad_func = jax.vjp(fwd_func,
+        query_squeezed, key_squeezed, value_squeezed)
+    grad_q, grad_k, grad_v = grad_func(doutput)
+
+    grad_q = jnp.reshape(grad_q, query.shape)
+    grad_k = jnp.reshape(grad_k, key.shape)
+    grad_v = jnp.reshape(grad_v, value.shape)
+
+    grad_qkv = jnp.concatenate((grad_q, grad_k, grad_v), axis=-3)
+    print('Use unfused bwd', flush=True)
 
     return grad_qkv, grad_bias, None, None
 
