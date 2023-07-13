@@ -5,8 +5,11 @@
 
 from enum import Enum
 from functools import partial
+from typing import Any, Callable, Optional, Sequence, Tuple, Union
+
 import jax
 import jax.numpy as jnp
+from flax.linen import dot_product_attention
 
 import transformer_engine_jax
 from transformer_engine_jax import NVTE_Bias_Type
@@ -17,9 +20,77 @@ from .cpp_extensions import self_fused_attn_fwd, self_fused_attn_bwd
 from .sharding import get_fused_attn_sharding_meta
 from .sharding import ShardingType
 from .sharding import xmap_runner
+from .flax.module import Softmax
+from .softmax import SoftmaxType
 
 jax.config.update('experimental_xmap_spmd_lowering', True)
 jax.config.update('experimental_xmap_spmd_lowering_manual', True)
+
+
+PRNGKey = Any
+Shape = Tuple[int, ...]
+DType = jnp.dtype
+Array = jnp.ndarray
+
+
+# def core_attention(query: Array,
+#                    key: Array,
+#                    value: Array,
+#                    scale_factor: float,
+#                    transpose_batch_sequence: bool,
+#                    softmax_type: SoftmaxType = SoftmaxType.SCALED,
+#                    softmax_sharding_type: ShardingType = ShardingType.SINGLE,
+#                    mask: Optional[Array] = None,
+#                    bias: Optional[Array] = None,
+#                    dropout_rng: Optional[PRNGKey] = None,
+#                    dropout_rate: float = 0.,
+#                    deterministic: bool = False,
+#                    dtype: DType = jnp.float32,
+#                    float32_logits: bool = False):
+#     """Core attention"""
+#     assert key.ndim == query.ndim == value.ndim, 'q, k, v must have same rank.'
+#     batch_dim = 1 if transpose_batch_sequence else 0
+#     assert query.shape[batch_dim] == key.shape[batch_dim] == value.shape[batch_dim], (
+#         'q, k, v batch dims must match.')
+#     assert query.shape[-2] == key.shape[-2] == value.shape[-2], ('q, k, v num_heads must match.')
+#     sequence_dim = 0 if transpose_batch_sequence else 1
+#     assert key.shape[sequence_dim] == value.shape[sequence_dim], 'k, v lengths must match.'
+#     assert query.shape[-1] == key.shape[-1], 'q, k depths must match.'
+
+#     if float32_logits:
+#         query = query.astype(jnp.float32)
+#         key = key.astype(jnp.float32)
+
+#     if transpose_batch_sequence:
+#         attn_weights = jnp.einsum('qbhd,kbhd->bhqk', query, key)
+#     else:
+#         attn_weights = jnp.einsum('bqhd,bkhd->bhqk', query, key)
+
+#     # When a bias is present, the computation is performed as Softmax(attn_weights * scale + bias).
+#     # In this case, the scale can not fused into the Softmax module.
+#     if bias is not None:
+#         attn_weights = attn_weights * scale_factor
+#         fused_scale_factor = 1.
+#     else:
+#         # If no bias, the scale can be fused into Softmax module
+#         fused_scale_factor = scale_factor
+
+#     attn_weights = Softmax(softmax_type=softmax_type,
+#                            scale_factor=fused_scale_factor,
+#                            sharding_type=softmax_sharding_type)(attn_weights, mask, bias)
+
+#     if not deterministic and dropout_rate > 0.:
+#         keep_prob = 1.0 - dropout_rate
+#         dropout_shape = list(attn_weights.shape)
+#         # TODO(rewang): add attention dropout broadcast dimension arguments for users
+#         keep = jax_random.bernoulli(dropout_rng, keep_prob, dropout_shape)
+#         multiplier = (keep.astype(attn_weights.dtype) / jnp.asarray(keep_prob, dtype=dtype))
+#         attn_weights = attn_weights * multiplier
+
+#     if transpose_batch_sequence:
+#         return jnp.einsum('bhqk,kbhd->qbhd', attn_weights, value)
+
+#     return jnp.einsum('bhqk,bkhd->bqhd', attn_weights, value)
 
 
 def is_fused_attn_kernel_available():
@@ -134,7 +205,23 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
                                                          scaling_factor=scaling_factor,
                                                          dropout_probability=dropout_probability,
                                                          is_training=is_training)
-    return output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
+
+    query, key, value = jnp.split(qkv, [1, 2], axis=-3)
+    query = jnp.reshape(query, [*qkv.shape[:2], *qkv.shape[-2:]])
+    key = jnp.reshape(key, [*qkv.shape[:2], *qkv.shape[-2:]])
+    value = jnp.reshape(value, [*qkv.shape[:2], *qkv.shape[-2:]])
+
+    unfused_output = dot_product_attention(query,
+                                   key,
+                                   value,
+                                   bias=bias,
+                                   mask=(mask == 0),
+                                   deterministic=(not is_training),
+                                   dropout_rate=dropout_probability,
+                                   dropout_rng=seed,
+                                   dtype=qkv.dtype)
+
+    return unfused_output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
 
 
 def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout_probability,
