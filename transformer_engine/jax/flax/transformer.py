@@ -178,9 +178,11 @@ def core_attention(query: Array,
         # If no bias, the scale can be fused into Softmax module
         fused_scale_factor = scale_factor
 
+    print(f'Before softmax {attn_weights.dtype}', flush=True)
     attn_weights = Softmax(softmax_type=softmax_type,
                            scale_factor=fused_scale_factor,
-                           sharding_type=softmax_sharding_type)(attn_weights, mask, bias)
+                           sharding_type=softmax_sharding_type)(attn_weights, mask, bias).astype(dtype)
+    print(f'After softmax {attn_weights.dtype}', flush=True)
 
     if not deterministic and dropout_rate > 0.:
         keep_prob = 1.0 - dropout_rate
