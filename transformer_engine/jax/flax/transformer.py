@@ -571,26 +571,36 @@ class MultiHeadAttention(nn.Module):
                 mismatch = nsize - ret.sum()
                 mismatch_rate = mismatch/nsize * 100
                 jax.debug.print("Mismatch rate: {}/{} = {}%", mismatch, nsize, mismatch_rate)
-                def save_with_jit(x, qkv_proj, fused_x, unfused_x):
-                    def hfunc(l):
-                        qkv_proj, fused_x, unfused_x = l
+                def save_with_jit(qkv_proj, fused_x, unfused_x, mismatch_rate):
+                    def hfunc(x, transforms):
+                        qkv_proj, fused_x, unfused_x, mismatch_rate = x
+                        qkv_proj = np.array(qkv_proj.astype(jnp.float32))
+                        fused_x = np.array(fused_x.astype(jnp.float32))
+                        unfused_x = np.array(unfused_x.astype(jnp.float32))
                         uid = random.choice(list(range(3)))
-                        with open(f'test.{uid}.npz', 'wb') as fp:
-                            jnp.savez_compressed(fp, qkv_proj, fused_x, unfused_x)
-                    host_callback.call(hfunc, [qkv_proj, fused_x, unfused_x])
-                save_with_jit(ret, qkv_proj, fused_x, unfused_x)
+                        filename = f'/workspace/fp32_logits.{uid}.5.npz'
+                        if os.path.isfile(filename):
+                            return
+                        with open(filename, 'wb') as fp:
+                            np.savez_compressed(fp,
+                                qkv_proj=qkv_proj,
+                                fused_out=fused_x,
+                                unfused_out=unfused_x,
+                                mismatch_rate=mismatch_rate)
+                    host_callback.id_tap(hfunc, (qkv_proj, fused_x, unfused_x, mismatch_rate))
+                save_with_jit(qkv_proj, fused_x, unfused_x, mismatch_rate)
 
             ret = jnp.isclose(fused_x, unfused_x, rtol, atol)
             nsize = jnp.size(ret)
             mismatch = nsize - ret.sum()
             mismatch_rate = mismatch/nsize
 
-            # jax.lax.cond(mismatch_rate < 0.05, good, bad, ret, qkv_proj, fused_x, unfused_x)
-            jax.debug.print("Mismatch rate: {}/{} = {}", mismatch, nsize, mismatch_rate)
-            actual = fused_x.astype(jnp.float32)
-            desired = unfused_x.astype(jnp.float32)
-            l2_norm = jnp.sum(jnp.square(actual - desired))/jnp.sum(jnp.square(desired))
-            jax.debug.print("L2 norm: {}", l2_norm)
+            jax.lax.cond(mismatch_rate < 0.05, good, bad, ret, qkv_proj, fused_x, unfused_x)
+            # jax.debug.print("Mismatch rate: {}/{} = {}", mismatch, nsize, mismatch_rate)
+            # actual = fused_x.astype(jnp.float32)
+            # desired = unfused_x.astype(jnp.float32)
+            # l2_norm = jnp.sum(jnp.square(actual - desired))/jnp.sum(jnp.square(desired))
+            # jax.debug.print("L2 norm: {}", l2_norm)
 
         _check(qkv_proj, fused_x, unfused_x)
 
