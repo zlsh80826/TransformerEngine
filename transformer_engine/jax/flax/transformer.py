@@ -560,7 +560,6 @@ class MultiHeadAttention(nn.Module):
         fused_x = fused_impl(self, qkv_proj)
         unfused_x = unfused_impl(self, qkv_proj)
 
-        jnp.set_printoptions(precision=3)
         def _check(qkv_proj, fused_x, unfused_x, rtol=1e-2, atol=1e-2):
             def good(ret, qkv_proj, fused_x, unfused_x):
                 pass
@@ -573,21 +572,23 @@ class MultiHeadAttention(nn.Module):
                 def save_with_jit(x, qkv_proj, fused_x, unfused_x):
                     def hfunc(l):
                         qkv_proj, fused_x, unfused_x = l
-                        uid = random.choice(list(range(10)))
+                        uid = random.choice(list(range(3)))
                         with open(f'test.{uid}.npz', 'wb') as fp:
-                            jnp.savez(fp, qkv_proj, fused_x, unfused_x)
+                            jnp.savez_compressed(fp, qkv_proj, fused_x, unfused_x)
                     host_callback.call(hfunc, [qkv_proj, fused_x, unfused_x])
                 save_with_jit(ret, qkv_proj, fused_x, unfused_x)
+
             ret = jnp.isclose(fused_x, unfused_x, rtol, atol)
             nsize = jnp.size(ret)
             mismatch = nsize - ret.sum()
             mismatch_rate = mismatch/nsize
-            jax.lax.cond(mismatch_rate < 0.05, good, bad, ret, qkv_proj, fused_x, unfused_x)
-            # jax.debug.print("Mismatch rate: {}/{} = {}", mismatch, nsize, mismatch_rate)
-            # actual = actual.astype(jnp.float32)
-            # desired = desired.astype(jnp.float32)
-            # l2_norm = jnp.sum(jnp.square(actual - desired))/jnp.sum(jnp.square(desired))
-            # jax.debug.print("L2 norm: {}", l2_norm)
+
+            # jax.lax.cond(mismatch_rate < 0.05, good, bad, ret, qkv_proj, fused_x, unfused_x)
+            jax.debug.print("Mismatch rate: {}/{} = {}", mismatch, nsize, mismatch_rate)
+            actual = fused_x.astype(jnp.float32)
+            desired = unfused_x.astype(jnp.float32)
+            l2_norm = jnp.sum(jnp.square(actual - desired))/jnp.sum(jnp.square(desired))
+            jax.debug.print("L2 norm: {}", l2_norm)
 
         _check(qkv_proj, fused_x, unfused_x)
 
