@@ -18,6 +18,7 @@ from jax.experimental import host_callback
 import numpy as np
 from flax import linen as nn
 from flax.linen import partitioning as nn_partitioning
+from flax.linen import dot_product_attention
 from jax import dtypes
 from jax import nn as jax_nn
 from jax import random as jax_random
@@ -460,19 +461,20 @@ class MultiHeadAttention(nn.Module):
             assert ln_out is not None
             residual = ln_out
 
-        def impl(mdl, qkv_proj, decode, deterministic, use_fused_attn):
+        mask = (jnp.tril(jnp.ones_like(mask)) == 0)
+        def impl(mdl, qkv_proj, mask, decode, deterministic, use_fused_attn):
             # if not use_fused_attn:
-            query, key, value = jnp.split(qkv_proj, [1, 2], axis=-2)
-            query = query.reshape((query.shape[0], query.shape[1], self.num_heads, self.head_dim))
-            key = key.reshape((key.shape[0], key.shape[1], self.num_heads, self.head_dim))
-            value = value.reshape((value.shape[0], value.shape[1], self.num_heads, self.head_dim))
-            qkv_sharding_constraint = \
-                ('length', 'batch', 'heads','kv') \
-                if self.transpose_batch_sequence \
-                else ('batch', 'length', 'heads', 'kv')
-            query = nn_partitioning.with_sharding_constraint(query, qkv_sharding_constraint)
-            key = nn_partitioning.with_sharding_constraint(key, qkv_sharding_constraint)
-            value = nn_partitioning.with_sharding_constraint(value, qkv_sharding_constraint)
+            #query, key, value = jnp.split(qkv_proj, [1, 2], axis=-2)
+            #query = query.reshape((query.shape[0], query.shape[1], self.num_heads, self.head_dim))
+            #key = key.reshape((key.shape[0], key.shape[1], self.num_heads, self.head_dim))
+            #value = value.reshape((value.shape[0], value.shape[1], self.num_heads, self.head_dim))
+            #qkv_sharding_constraint = \
+            #    ('length', 'batch', 'heads','kv') \
+            #    if self.transpose_batch_sequence \
+            #    else ('batch', 'length', 'heads', 'kv')
+            #query = nn_partitioning.with_sharding_constraint(query, qkv_sharding_constraint)
+            #key = nn_partitioning.with_sharding_constraint(key, qkv_sharding_constraint)
+            #value = nn_partitioning.with_sharding_constraint(value, qkv_sharding_constraint)
 
             assert not decode
 
@@ -523,10 +525,8 @@ class MultiHeadAttention(nn.Module):
                                     is_training=not deterministic,
                                     sharding_type=first_sharding_type)
             else:
+                """
                 def convert_to_softmax_type(attn_mask_type, mask):
-                    """
-                    Convert the string to SoftmaxType
-                    """
                     if attn_mask_type == 'causal':
                         return SoftmaxType.SCALED_UPPER_TRIANG_MASKED
                     if attn_mask_type == 'padding':
@@ -552,6 +552,24 @@ class MultiHeadAttention(nn.Module):
                                 deterministic=deterministic,
                                 dtype=self.dtype,
                                 float32_logits=self.float32_logits)
+                """
+                query, key, value = jnp.split(qkv_proj, [1, 2], axis=-2)
+                # query = jnp.squeeze(query)
+                # key = jnp.squeeze(key)
+                # value = jnp.squeeze(value)
+                query = query.reshape((query.shape[0], query.shape[1], self.num_heads, self.head_dim))
+                key = key.reshape((key.shape[0], key.shape[1], self.num_heads, self.head_dim))
+                value = value.reshape((value.shape[0], value.shape[1], self.num_heads, self.head_dim))
+                x = dot_product_attention(
+                        query, key, value, bias=bias, mask=(mask == 0),
+                        deterministic=deterministic, dropout_rate=self.dropout_rate,
+                        dropout_rng=dropout_rng, dtype=jnp.float32)
+                print(f'in {qkv_proj.shape=}', flush=True)
+                print(f'{query.dtype=}', flush=True)
+                print(f'{x.dtype=}', flush=True)
+                print(f'{deterministic=}', flush=True)
+                print(f'{self.dropout_rate=}', flush=True)
+                print(f'{dropout_rng=}', flush=True)
             return x
 
         fused_impl = functools.partial(impl, decode=decode, deterministic=deterministic,
@@ -559,53 +577,56 @@ class MultiHeadAttention(nn.Module):
         unfused_impl = functools.partial(impl, decode=decode, deterministic=deterministic,
             use_fused_attn=False)
 
-        fused_x = fused_impl(self, qkv_proj)
-        unfused_x = unfused_impl(self, qkv_proj)
+        fused_x = fused_impl(self, qkv_proj, mask)
+        unfused_x = unfused_impl(self, qkv_proj, mask)
 
-        def _check(qkv_proj, fused_x, unfused_x, rtol=1e-2, atol=1e-2):
-            def good(ret, qkv_proj, fused_x, unfused_x):
+        def _check(qkv_proj, fused_x, unfused_x, mask, rtol=1e-2, atol=1e-2):
+            def good(ret, qkv_proj, fused_x, unfused_x, mask):
                 pass
 
-            def bad(ret, qkv_proj, fused_x, unfused_x):
+            def bad(ret, qkv_proj, fused_x, unfused_x, mask):
                 nsize = jnp.size(ret)
                 mismatch = nsize - ret.sum()
                 mismatch_rate = mismatch/nsize * 100
                 jax.debug.print("Mismatch rate: {}/{} = {}%", mismatch, nsize, mismatch_rate)
-                def save_with_jit(qkv_proj, fused_x, unfused_x, mismatch_rate):
+                def save_with_jit(qkv_proj, fused_x, unfused_x, mask, mismatch_rate):
                     def hfunc(x, transforms):
-                        qkv_proj, fused_x, unfused_x, mismatch_rate = x
+                        qkv_proj, fused_x, unfused_x, mask, mismatch_rate = x
                         qkv_proj = np.array(qkv_proj.astype(jnp.float32))
                         fused_x = np.array(fused_x.astype(jnp.float32))
                         unfused_x = np.array(unfused_x.astype(jnp.float32))
-                        uid = random.choice(list(range(3)))
-                        filename = f'/workspace/fp32_logits.{uid}.5.npz'
+                        uid = random.choice(list(range(10)))
+                        filename = f'/workspace/8.layers.{uid}.6.npz'
                         if os.path.isfile(filename):
                             return
                         with open(filename, 'wb') as fp:
-                            np.savez_compressed(fp,
+                            np.savez(fp,
                                 qkv_proj=qkv_proj,
                                 fused_out=fused_x,
                                 unfused_out=unfused_x,
+                                mask=mask,
                                 mismatch_rate=mismatch_rate)
-                    host_callback.id_tap(hfunc, (qkv_proj, fused_x, unfused_x, mismatch_rate))
-                save_with_jit(qkv_proj, fused_x, unfused_x, mismatch_rate)
+                    host_callback.id_tap(hfunc, (qkv_proj, fused_x, unfused_x, mask, mismatch_rate))
+                save_with_jit(qkv_proj, fused_x, unfused_x, mask, mismatch_rate)
 
-            ret = jnp.isclose(fused_x, unfused_x, rtol, atol)
+            ret = jnp.isclose(fused_x, unfused_x, rtol=rtol, atol=atol)
             nsize = jnp.size(ret)
             mismatch = nsize - ret.sum()
             mismatch_rate = mismatch/nsize
 
-            jax.lax.cond(mismatch_rate < 0.05, good, bad, ret, qkv_proj, fused_x, unfused_x)
+            jax.lax.cond(mismatch_rate < 0.05, good, bad, ret, qkv_proj, fused_x, unfused_x, mask)
             # jax.debug.print("Mismatch rate: {}/{} = {}", mismatch, nsize, mismatch_rate)
             # actual = fused_x.astype(jnp.float32)
             # desired = unfused_x.astype(jnp.float32)
             # l2_norm = jnp.sum(jnp.square(actual - desired))/jnp.sum(jnp.square(desired))
             # jax.debug.print("L2 norm: {}", l2_norm)
 
-        _check(qkv_proj, fused_x, unfused_x)
+        print(f'out {qkv_proj.shape=}', flush=True)
+        _check(qkv_proj, fused_x, unfused_x, mask)
 
-        # x = unfused_x
+        # x = unfused_x.astype(qkv_proj.dtype)
         x = fused_x
+        print(f'After attn {x.dtype=}', flush=True)
 
         x = x.reshape((x.shape[0], x.shape[1], x.shape[2] * x.shape[3]))
 
