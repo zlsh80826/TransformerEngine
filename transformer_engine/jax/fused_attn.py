@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import transformer_engine_jax
 from transformer_engine_jax import NVTE_Bias_Type
 from transformer_engine_jax import NVTE_Mask_Type
+from flax.linen import dot_product_attention
 
 from .cpp_extensions import cross_fused_attn_fwd, cross_fused_attn_bwd
 from .cpp_extensions import self_fused_attn_fwd, self_fused_attn_bwd
@@ -134,12 +135,29 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
                                                          scaling_factor=scaling_factor,
                                                          dropout_probability=dropout_probability,
                                                          is_training=is_training)
-    return output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
+
+    query, key, value = jnp.split(qkv, [1, 2], axis=-3)
+    query = jnp.squeeze(query)
+    key = jnp.squeeze(key)
+    value = jnp.squeeze(value)
+
+    unfused_output = dot_product_attention(query,
+                                   key,
+                                   value,
+                                   bias=bias,
+                                   mask=(mask == 0),
+                                   deterministic=(not is_training),
+                                   dropout_rate=dropout_probability,
+                                   dropout_rng=seed,
+                                   dtype=jnp.float32).astype(qkv.dtype)
+
+    print(f'Use unfused output in fwd', flush=True)
+    return unfused_output, (qkv, softmax_aux, rng_state, output, cu_seqlen, bias, mask, seed)
 
 
 def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout_probability,
                          is_training, ctx, grad):
-    qkv, softmax_aux, rng_state, output, cu_seqlen = ctx
+    qkv, softmax_aux, rng_state, output, cu_seqlen, bias, mask, seed = ctx
 
     doutput = grad
 
@@ -155,6 +173,43 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
                                               dropout_probability=dropout_probability,
                                               is_training=is_training)
 
+    assert bias is None, "debugging..."
+    ugrad_bias = None
+
+    def fwd_func(qkv):
+        query, key, value = jnp.split(qkv, [1, 2], axis=-3)
+        query = jnp.squeeze(query)
+        key = jnp.squeeze(key)
+        value = jnp.squeeze(value)
+
+        output = dot_product_attention(
+            query,
+            key,
+            value,
+            bias=bias,
+            mask=(mask == 0),
+            deterministic=(not is_training),
+            dropout_rate=dropout_probability,
+            dropout_rng=seed,
+            dtype=jnp.float32)
+
+        return output.astype(qkv.dtype)
+
+    _, grad_func = jax.vjp(fwd_func, qkv)
+    ugrad_qkv, = grad_func(doutput)
+
+    ############ Compare ###########
+    matchmap = jnp.isclose(grad_qkv, ugrad_qkv, rtol=1e-3, atol=1e-3)
+    nsize = jnp.size(matchmap)
+    mismatch = nsize - matchmap.sum()
+    mismatch_rate = mismatch/nsize
+    jax.debug.print("Mismatch rate: {}/{} = {}", mismatch, nsize, mismatch_rate)
+    actual = grad_qkv.astype(jnp.float32)
+    desired = ugrad_qkv.astype(jnp.float32)
+    l2_norm = jnp.sum(jnp.square(actual - desired))/jnp.sum(jnp.square(desired))
+    jax.debug.print("L2 norm: {}", l2_norm)
+
+    print(f'Use fused output in bwd', flush=True)
     return grad_qkv, grad_bias, None, None
 
 
