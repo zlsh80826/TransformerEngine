@@ -343,9 +343,6 @@ class MultiHeadAttention(nn.Module):
             Output tensors.
         """
 
-        # Force causal mask to debug
-        mask = jnp.tril(jnp.ones_like(mask))
-
         def query_init(*args):
             depth_scaling = jnp.sqrt(self.head_dim).astype(self.dtype)
             return self.kernel_init(*args) / (depth_scaling if self.scaled_query_init else 1.0)
