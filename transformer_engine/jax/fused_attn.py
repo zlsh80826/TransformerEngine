@@ -158,7 +158,6 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
 def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout_probability,
                          is_training, ctx, grad):
     qkv, softmax_aux, rng_state, output, cu_seqlen, bias, mask, seed = ctx
-
     doutput = grad
 
     grad_qkv, grad_bias = self_fused_attn_bwd(qkv,
@@ -176,7 +175,7 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
     assert bias is None, "debugging..."
     ugrad_bias = None
 
-    def fwd_func(qkv):
+    def fwd_func(qkv, mask):
         query, key, value = jnp.split(qkv, [1, 2], axis=-3)
         query = jnp.squeeze(query)
         key = jnp.squeeze(key)
@@ -195,19 +194,19 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
 
         return output.astype(qkv.dtype)
 
-    _, grad_func = jax.vjp(fwd_func, qkv)
-    ugrad_qkv, = grad_func(doutput)
+    _, grad_func = jax.vjp(fwd_func, qkv, mask)
+    ugrad_qkv, _ = grad_func(doutput)
 
     ############ Compare ###########
-    matchmap = jnp.isclose(grad_qkv, ugrad_qkv, rtol=1e-3, atol=1e-3)
-    nsize = jnp.size(matchmap)
-    mismatch = nsize - matchmap.sum()
-    mismatch_rate = mismatch/nsize
-    jax.debug.print("Mismatch rate: {}/{} = {}", mismatch, nsize, mismatch_rate)
-    actual = grad_qkv.astype(jnp.float32)
-    desired = ugrad_qkv.astype(jnp.float32)
-    l2_norm = jnp.sum(jnp.square(actual - desired))/jnp.sum(jnp.square(desired))
-    jax.debug.print("L2 norm: {}", l2_norm)
+    # matchmap = jnp.isclose(grad_qkv, ugrad_qkv, rtol=1e-3, atol=1e-3)
+    # nsize = jnp.size(matchmap)
+    # mismatch = nsize - matchmap.sum()
+    # mismatch_rate = mismatch/nsize
+    # jax.debug.print("Mismatch rate: {}/{} = {}", mismatch, nsize, mismatch_rate)
+    # actual = grad_qkv.astype(jnp.float32)
+    # desired = ugrad_qkv.astype(jnp.float32)
+    # l2_norm = jnp.sum(jnp.square(actual - desired))/jnp.sum(jnp.square(desired))
+    # jax.debug.print("L2 norm: {}", l2_norm)
 
     print(f'Use fused output in bwd', flush=True)
     return grad_qkv, grad_bias, None, None
