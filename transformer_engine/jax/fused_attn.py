@@ -203,10 +203,20 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
     # mismatch = nsize - matchmap.sum()
     # mismatch_rate = mismatch/nsize
     # jax.debug.print("Mismatch rate: {}/{} = {}", mismatch, nsize, mismatch_rate)
-    # actual = grad_qkv.astype(jnp.float32)
-    # desired = ugrad_qkv.astype(jnp.float32)
-    # l2_norm = jnp.sum(jnp.square(actual - desired))/jnp.sum(jnp.square(desired))
+    actual = grad_qkv.astype(jnp.float32)
+    desired = ugrad_qkv.astype(jnp.float32)
+    l2_norm = jnp.sum(jnp.square(actual - desired))/jnp.sum(jnp.square(desired))
     # jax.debug.print("L2 norm: {}", l2_norm)
+
+    def _nothing(*args):
+        pass
+
+    def _post_check(*args):
+        l2_norm, qkv, doutput, grad_qkv, ugrad_qkv = args
+        jax.debug.print("L2 norm: {}", l2_norm)
+
+    jax.lax.cond(l2_norm >= 1e-3, _post_check, _nothing,
+        l2_norm, qkv, doutput, grad_qkv, ugrad_qkv)
 
     print(f'Use fused output in bwd', flush=True)
     return grad_qkv, grad_bias, None, None
