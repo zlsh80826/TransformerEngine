@@ -7,6 +7,8 @@ from enum import Enum
 from functools import partial
 import jax
 import jax.numpy as jnp
+from jax.experimental import host_callback
+import numpy as np
 
 import transformer_engine_jax
 from transformer_engine_jax import NVTE_Bias_Type
@@ -154,6 +156,15 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
                                               scaling_factor=scaling_factor,
                                               dropout_probability=dropout_probability,
                                               is_training=is_training)
+
+    def dump_to_file(x, transform):
+        qkv, doutput = x
+        qkv = qkv.astype(jnp.float32)
+        doutput = doutput.astype(jnp.float32)
+        with open('/workspace/data/32.512.12.64.npz', 'wb') as file:
+            np.savez(file, qkv=qkv, doutput=doutput)
+
+    host_callback.id_tap(dump_to_file, (qkv, doutput))
 
     return grad_qkv, grad_bias, None, None
 
