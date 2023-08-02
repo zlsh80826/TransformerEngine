@@ -18,6 +18,10 @@ from .sharding import get_fused_attn_sharding_meta
 from .sharding import ShardingType
 from .sharding import xmap_runner
 
+from jax.experimental import host_callback
+import os
+import numpy as np
+
 jax.config.update('experimental_xmap_spmd_lowering', True)
 jax.config.update('experimental_xmap_spmd_lowering_manual', True)
 
@@ -134,6 +138,7 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
                                                          scaling_factor=scaling_factor,
                                                          dropout_probability=dropout_probability,
                                                          is_training=is_training)
+
     return output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
 
 
@@ -157,6 +162,29 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
 
     if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
         grad_bias = None
+
+    def dump_to_file(x, _):
+        qkv, doutput = x
+        qkv = np.array(qkv.astype(jnp.float32))
+        doutput = np.array(doutput.astype(jnp.float32))
+        filename = '/workspace/test.npz'
+        if os.path.isfile(filename):
+            # Not to save the same file
+            return
+        with open(filename, 'wb') as file:
+            np.savez(file, qkv=qkv, doutput=doutput)
+
+    def _true(thres, qkv, doutput):
+        # jax.debug.print('Detect qkv.max() > {}', thres)
+        host_callback.id_tap(dump_to_file, (qkv, doutput))
+
+    def _false(thres, qkv, doutput):
+        # nothing
+        pass
+
+    # Only dump the file in some condition
+    thres = 0.
+    jax.lax.cond(qkv.max() > thres, _true, _false, thres, qkv, doutput)
 
     return grad_qkv, grad_bias, None, None
 
