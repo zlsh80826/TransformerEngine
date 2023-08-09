@@ -129,45 +129,42 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
     cu_seqlen = jnp.cumsum(seqlen)
     cu_seqlen = jnp.hstack((0, cu_seqlen))
 
-    # if not bool(os.environ.get("USE_TRITON_FLASH_ATTN", False)):
-    output, softmax_aux, rng_state = self_fused_attn_fwd(qkv,
-                                                        bias,
-                                                        cu_seqlen,
-                                                        seed,
-                                                        attn_bias_type=attn_bias_type.value,
-                                                        attn_mask_type=attn_mask_type.value,
-                                                        scaling_factor=scaling_factor,
-                                                        dropout_probability=dropout_probability,
-                                                        is_training=is_training)
-    # else:
-    #     def triton_fmha(qkv):
-    #         q, k, v = jnp.split(qkv, [1, 2], axis=2)
-    #         q = jnp.reshape(q, [*q.shape[:2], *q.shape[-2:]])
-    #         k = jnp.reshape(k, [*k.shape[:2], *k.shape[-2:]])
-    #         v = jnp.reshape(v, [*v.shape[:2], *v.shape[-2:]])
-    #         output = attention.mha(q, k, v,
-    #             sm_scale=scaling_factor,
-    #             causal=True,
-    #             backward_pass_impl='triton',
-    #             interpret=False)
-    #         return output
-    #     output = triton_fmha(qkv)
-    #     softmax_aux = None
-    #     rng_state = None
-
-    return output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
+    if not bool(os.environ.get("USE_TRITON_FLASH_ATTN", False)):
+        output, softmax_aux, rng_state = self_fused_attn_fwd(qkv,
+                                                            bias,
+                                                            cu_seqlen,
+                                                            seed,
+                                                            attn_bias_type=attn_bias_type.value,
+                                                            attn_mask_type=attn_mask_type.value,
+                                                            scaling_factor=scaling_factor,
+                                                            dropout_probability=dropout_probability,
+                                                            is_training=is_training)
+        return output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
+    else:
+        def triton_fmha(qkv):
+            q, k, v = jnp.split(qkv, [1, 2], axis=2)
+            q = jnp.reshape(q, [*q.shape[:2], *q.shape[-2:]])
+            k = jnp.reshape(k, [*k.shape[:2], *k.shape[-2:]])
+            v = jnp.reshape(v, [*v.shape[:2], *v.shape[-2:]])
+            output = attention.mha(q, k, v,
+                sm_scale=scaling_factor,
+                causal=True,
+                backward_pass_impl='triton',
+                interpret=False)
+            return output
+        output = triton_fmha(qkv)
+        return output, (qkv,)
 
 
 def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout_probability,
                          is_training, ctx, grad):
-    qkv, softmax_aux, rng_state, output, cu_seqlen = ctx
-
     doutput = grad
 
     assert attn_mask_type == AttnMaskType.CAUSAL_MASK
     assert attn_bias_type == AttnBiasType.NO_BIAS
 
     if not bool(os.environ.get("USE_TRITON_FLASH_ATTN", False)):
+        qkv, softmax_aux, rng_state, output, cu_seqlen = ctx
         grad_qkv, grad_bias = self_fused_attn_bwd(qkv,
                                                 softmax_aux,
                                                 rng_state,
@@ -180,6 +177,7 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
                                                 dropout_probability=dropout_probability,
                                                 is_training=is_training)
     else:
+        qkv, = ctx
         def triton_fmha(qkv):
             q, k, v = jnp.split(qkv, [1, 2], axis=2)
             q = jnp.reshape(q, [*q.shape[:2], *q.shape[-2:]])
