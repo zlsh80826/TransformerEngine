@@ -146,42 +146,46 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
 
     doutput = grad
 
-    # grad_qkv, grad_bias = self_fused_attn_bwd(qkv,
-    #                                           softmax_aux,
-    #                                           rng_state,
-    #                                           output,
-    #                                           doutput,
-    #                                           cu_seqlen,
-    #                                           attn_bias_type=attn_bias_type.value,
-    #                                           attn_mask_type=attn_mask_type.value,
-    #                                           scaling_factor=scaling_factor,
-    #                                           dropout_probability=dropout_probability,
-    #                                           is_training=is_training)
+    grad_qkv, grad_bias = self_fused_attn_bwd(qkv,
+                                              softmax_aux,
+                                              rng_state,
+                                              output,
+                                              doutput,
+                                              cu_seqlen,
+                                              attn_bias_type=attn_bias_type.value,
+                                              attn_mask_type=attn_mask_type.value,
+                                              scaling_factor=scaling_factor,
+                                              dropout_probability=dropout_probability,
+                                              is_training=is_training)
 
-    assert attn_mask_type == AttnMaskType.CAUSAL_MASK
-    assert attn_bias_type == AttnBiasType.NO_BIAS
-    # if attn_bias_type == AttnBiasType.NO_BIAS:
-    grad_bias = None
+    q, k, v = jnp.split(qkv, [1, 2], axis=2)
+    dq, dk, dv = jnp.split(grad_qkv, [1, 2], axis=2)
 
-    def triton_fmha(qkv):
-        q, k, v = jnp.split(qkv, [1, 2], axis=2)
-        q = jnp.reshape(q, [*q.shape[:2], *q.shape[-2:]])
-        k = jnp.reshape(k, [*k.shape[:2], *k.shape[-2:]])
-        v = jnp.reshape(v, [*v.shape[:2], *v.shape[-2:]])
-        output = attention.mha(q, k, v,
-            sm_scale=scaling_factor,
-            causal=True,
-            backward_pass_impl='triton',
-            interpret=True)
-        return output
+    jax.debug.print('q.max={}, k.max={}, v.max={}, output.max={}, dq.max={}, dk.max={}, dv.max={}, doutput.max={}',
+        q.max(), k.max(), v.max(), output.max(), dq.max(), dk.max(), dv.max(), doutput.max()
+    )
+
+    # assert attn_mask_type == AttnMaskType.CAUSAL_MASK
+    # assert attn_bias_type == AttnBiasType.NO_BIAS
+    # # if attn_bias_type == AttnBiasType.NO_BIAS:
+    # grad_bias = None
+
+    # def triton_fmha(qkv):
+    #     q, k, v = jnp.split(qkv, [1, 2], axis=2)
+    #     q = jnp.reshape(q, [*q.shape[:2], *q.shape[-2:]])
+    #     k = jnp.reshape(k, [*k.shape[:2], *k.shape[-2:]])
+    #     v = jnp.reshape(v, [*v.shape[:2], *v.shape[-2:]])
+    #     output = attention.mha(q, k, v,
+    #         sm_scale=scaling_factor,
+    #         causal=True,
+    #         backward_pass_impl='triton',
+    #         interpret=True)
+    #     return output
         
-    triton_output, triton_grad_func = jax.vjp(triton_fmha, qkv)
-    triton_dqkv, = triton_grad_func(doutput)
+    # triton_output, triton_grad_func = jax.vjp(triton_fmha, qkv)
+    # grad_qkv, = triton_grad_func(doutput)
 
-    # print(f'{triton_dqkv=}', flush=True)
-
-    # return grad_qkv, grad_bias, None, None
-    return triton_dqkv, grad_bias, None, None
+    return grad_qkv, grad_bias, None, None
 
 
 _self_fused_attn.defvjp(_self_fused_attn_fwd, _self_fused_attn_bwd)
