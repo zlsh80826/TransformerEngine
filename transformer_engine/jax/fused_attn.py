@@ -149,7 +149,7 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
     #             sm_scale=scaling_factor,
     #             causal=True,
     #             backward_pass_impl='triton',
-    #             interpret=True)
+    #             interpret=False)
     #         return output
     #     output = triton_fmha(qkv)
     #     softmax_aux = None
@@ -189,7 +189,7 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
                 sm_scale=scaling_factor,
                 causal=True,
                 backward_pass_impl='triton',
-                interpret=True)
+                interpret=False)
             return output
         triton_output, triton_grad_func = jax.vjp(triton_fmha, qkv)
         grad_qkv, = triton_grad_func(doutput)
