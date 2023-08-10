@@ -129,7 +129,8 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
     cu_seqlen = jnp.cumsum(seqlen)
     cu_seqlen = jnp.hstack((0, cu_seqlen))
 
-    if not bool(os.environ.get("USE_TRITON_FLASH_ATTN", False)):
+    if not bool(os.environ.get("USE_TRITON_FLASH_ATTN_FWD", False)):
+        print('Use cudnn flash attn fwd.', flush=True)
         output, softmax_aux, rng_state = self_fused_attn_fwd(qkv,
                                                             bias,
                                                             cu_seqlen,
@@ -139,8 +140,8 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
                                                             scaling_factor=scaling_factor,
                                                             dropout_probability=dropout_probability,
                                                             is_training=is_training)
-        return output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
     else:
+        print('Use triton flash attn fwd.', flush=True)
         def triton_fmha(qkv):
             q, k, v = jnp.split(qkv, [1, 2], axis=2)
             q = jnp.reshape(q, [*q.shape[:2], *q.shape[-2:]])
@@ -153,18 +154,21 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
                 interpret=False)
             return output
         output = triton_fmha(qkv)
-        return output, (qkv,)
+        softmax_aux = None
+        rng_state = None
+    return output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
 
 
 def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout_probability,
                          is_training, ctx, grad):
+    qkv, softmax_aux, rng_state, output, cu_seqlen = ctx
     doutput = grad
 
     assert attn_mask_type == AttnMaskType.CAUSAL_MASK
     assert attn_bias_type == AttnBiasType.NO_BIAS
 
-    if not bool(os.environ.get("USE_TRITON_FLASH_ATTN", False)):
-        qkv, softmax_aux, rng_state, output, cu_seqlen = ctx
+    if not bool(os.environ.get("USE_TRITON_FLASH_ATTN_BWD", False)):
+        print('Use cudnn flash attn bwd.', flush=True)
         grad_qkv, grad_bias = self_fused_attn_bwd(qkv,
                                                 softmax_aux,
                                                 rng_state,
@@ -177,7 +181,7 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
                                                 dropout_probability=dropout_probability,
                                                 is_training=is_training)
     else:
-        qkv, = ctx
+        print('Use triton flash attn bwd.', flush=True)
         def triton_fmha(qkv):
             q, k, v = jnp.split(qkv, [1, 2], axis=2)
             q = jnp.reshape(q, [*q.shape[:2], *q.shape[-2:]])
@@ -193,12 +197,13 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
         grad_qkv, = triton_grad_func(doutput)
         grad_bias = None
 
-    q, k, v = jnp.split(qkv, [1, 2], axis=2)
-    dq, dk, dv = jnp.split(grad_qkv, [1, 2], axis=2)
+    if bool(os.environ.get("DUMP_TENSOR_STATS", False)):
+        q, k, v = jnp.split(qkv, [1, 2], axis=2)
+        dq, dk, dv = jnp.split(grad_qkv, [1, 2], axis=2)
 
-    jax.debug.print('q.max={}, k.max={}, v.max={}, output.max={}, dq.max={}, dk.max={}, dv.max={}, doutput.max={}',
-        q.max(), k.max(), v.max(), output.max(), dq.max(), dk.max(), dv.max(), doutput.max()
-    )
+        jax.debug.print('q.max={}, k.max={}, v.max={}, output.max={}, dq.max={}, dk.max={}, dv.max={}, doutput.max={}',
+            q.max(), k.max(), v.max(), output.max(), dq.max(), dk.max(), dv.max(), doutput.max()
+        )
 
     return grad_qkv, grad_bias, None, None
 

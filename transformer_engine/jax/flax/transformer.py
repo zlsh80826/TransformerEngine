@@ -31,6 +31,8 @@ from ..sharding import infer_major_sharding_type, infer_sharding_type
 from ..sharding import global_shard_resource, with_sharding_constraint
 from ..sharding import ShardingType
 
+from jax_triton.pallas.ops import attention
+
 PRNGKey = Any
 Shape = Tuple[int, ...]
 DType = jnp.dtype
@@ -646,21 +648,35 @@ class MultiHeadAttention(nn.Module):
             attn_mask_type = canonicalize_attn_mask_type(self.attn_mask_type)
 
             if inputs_q is inputs_kv:
-                qkv_proj = qkv_proj.reshape((*qkv_proj.shape[:-1], self.num_heads, self.head_dim))
-                qkv_sharding_constraint = (BATCH_AXES, SEQLEN_AXES, JOINED_AXES, HEAD_AXES,
-                                           HIDDEN_AXES)
-                qkv_proj = _with_sharding_constraint(qkv_proj, qkv_sharding_constraint)
-                x = self_fused_attn(qkv_proj,
-                                    bias,
-                                    mask,
-                                    seed,
-                                    attn_bias_type=attn_bias_type,
-                                    attn_mask_type=attn_mask_type,
-                                    scaling_factor=scale_factor,
-                                    dropout_probability=self.dropout_rate,
-                                    is_training=not deterministic,
-                                    sharding_type=first_sharding_type)
+                if not bool(os.environ.get("USE_TRITON_FLASH_ATTN", False)):
+                    print('Calling fused attention customcall', flush=True)
+                    qkv_proj = qkv_proj.reshape((*qkv_proj.shape[:-1], self.num_heads, self.head_dim))
+                    qkv_sharding_constraint = (BATCH_AXES, SEQLEN_AXES, JOINED_AXES, HEAD_AXES,
+                                            HIDDEN_AXES)
+                    qkv_proj = _with_sharding_constraint(qkv_proj, qkv_sharding_constraint)
+                    x = self_fused_attn(qkv_proj,
+                                        bias,
+                                        mask,
+                                        seed,
+                                        attn_bias_type=attn_bias_type,
+                                        attn_mask_type=attn_mask_type,
+                                        scaling_factor=scale_factor,
+                                        dropout_probability=self.dropout_rate,
+                                        is_training=not deterministic,
+                                        sharding_type=first_sharding_type)
+                else:
+                    print("Use triton flash fwd+bwd")
+                    q, k, v = jnp.split(qkv_proj, [1, 2], axis=2)
+                    q = jnp.reshape(q, [*q.shape[:2], *q.shape[-2:]])
+                    k = jnp.reshape(k, [*k.shape[:2], *k.shape[-2:]])
+                    v = jnp.reshape(v, [*v.shape[:2], *v.shape[-2:]])
+                    x = attention.mha(q, k, v,
+                        sm_scale=scale_factor,
+                        causal=True,
+                        backward_pass_impl='triton',
+                        interpret=False)
             else:
+                raise NotImplementedError
                 assert bias is None
                 query = query.reshape((*query.shape[:-1], self.num_heads, self.head_dim))
                 kv_proj = kv_proj.reshape((*kv_proj.shape[:-1], self.num_heads, self.head_dim))
