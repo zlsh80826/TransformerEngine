@@ -197,7 +197,7 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
         grad_qkv, = triton_grad_func(doutput)
         grad_bias = None
 
-    if bool(os.environ.get("DUMP_TENSOR_STATS", False)):
+    if bool(int(os.environ.get("DUMP_TENSOR_STATS", False))):
         q, k, v = jnp.split(qkv, [1, 2], axis=2)
         dq, dk, dv = jnp.split(grad_qkv, [1, 2], axis=2)
 
