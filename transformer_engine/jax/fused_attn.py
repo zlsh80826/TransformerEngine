@@ -140,10 +140,11 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
                                                             scaling_factor=scaling_factor,
                                                             dropout_probability=dropout_probability,
                                                             is_training=is_training)
+        return output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
     else:
         print('Use triton flash attn fwd.', flush=True)
         # Compute flash atten intermediate tensors
-        _, softmax_aux, rng_state = self_fused_attn_fwd(qkv,
+        coutput, softmax_aux, rng_state = self_fused_attn_fwd(qkv,
                                                             bias,
                                                             cu_seqlen,
                                                             seed,
@@ -163,8 +164,8 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
                 backward_pass_impl='triton',
                 interpret=False)
             return output
-        output = triton_fmha(qkv)
-    return output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
+        triton_output = triton_fmha(qkv)
+        return triton_output, (qkv, softmax_aux, rng_state, coutput, cu_seqlen)
 
 
 def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout_probability,
