@@ -129,7 +129,7 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
     cu_seqlen = jnp.cumsum(seqlen)
     cu_seqlen = jnp.hstack((0, cu_seqlen))
 
-    if not bool(os.environ.get("USE_TRITON_FLASH_ATTN_FWD", False)):
+    if not bool(int(os.environ.get("USE_TRITON_FLASH_ATTN_FWD", False))):
         print('Use cudnn flash attn fwd.', flush=True)
         output, softmax_aux, rng_state = self_fused_attn_fwd(qkv,
                                                             bias,
@@ -167,7 +167,7 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
     assert attn_mask_type == AttnMaskType.CAUSAL_MASK
     assert attn_bias_type == AttnBiasType.NO_BIAS
 
-    if not bool(os.environ.get("USE_TRITON_FLASH_ATTN_BWD", False)):
+    if not bool(int(os.environ.get("USE_TRITON_FLASH_ATTN_BWD", False))):
         print('Use cudnn flash attn bwd.', flush=True)
         grad_qkv, grad_bias = self_fused_attn_bwd(qkv,
                                                 softmax_aux,

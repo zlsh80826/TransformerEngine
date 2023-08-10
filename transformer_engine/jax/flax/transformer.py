@@ -648,7 +648,7 @@ class MultiHeadAttention(nn.Module):
             attn_mask_type = canonicalize_attn_mask_type(self.attn_mask_type)
 
             if inputs_q is inputs_kv:
-                if not bool(os.environ.get("USE_TRITON_FLASH_ATTN", False)):
+                if not bool(int(os.environ.get("USE_TRITON_FLASH_ATTN", False))):
                     print('Calling fused attention customcall', flush=True)
                     qkv_proj = qkv_proj.reshape((*qkv_proj.shape[:-1], self.num_heads, self.head_dim))
                     qkv_sharding_constraint = (BATCH_AXES, SEQLEN_AXES, JOINED_AXES, HEAD_AXES,
@@ -665,7 +665,7 @@ class MultiHeadAttention(nn.Module):
                                         is_training=not deterministic,
                                         sharding_type=first_sharding_type)
                 else:
-                    print("Use triton flash fwd+bwd")
+                    print("Use triton flash fwd+bwd", flush=True)
                     q, k, v = jnp.split(qkv_proj, [1, 2], axis=2)
                     q = jnp.reshape(q, [*q.shape[:2], *q.shape[-2:]])
                     k = jnp.reshape(k, [*k.shape[:2], *k.shape[-2:]])
