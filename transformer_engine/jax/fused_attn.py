@@ -142,6 +142,16 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
                                                             is_training=is_training)
     else:
         print('Use triton flash attn fwd.', flush=True)
+        # Compute flash atten intermediate tensors
+        _, softmax_aux, rng_state = self_fused_attn_fwd(qkv,
+                                                            bias,
+                                                            cu_seqlen,
+                                                            seed,
+                                                            attn_bias_type=attn_bias_type.value,
+                                                            attn_mask_type=attn_mask_type.value,
+                                                            scaling_factor=scaling_factor,
+                                                            dropout_probability=dropout_probability,
+                                                            is_training=is_training)
         def triton_fmha(qkv):
             q, k, v = jnp.split(qkv, [1, 2], axis=2)
             q = jnp.reshape(q, [*q.shape[:2], *q.shape[-2:]])
@@ -154,8 +164,6 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
                 interpret=False)
             return output
         output = triton_fmha(qkv)
-        softmax_aux = None
-        rng_state = None
     return output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
 
 
@@ -193,7 +201,7 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
                 backward_pass_impl='triton',
                 interpret=False)
             return output
-        triton_output, triton_grad_func = jax.vjp(triton_fmha, qkv)
+        _, triton_grad_func = jax.vjp(triton_fmha, qkv)
         grad_qkv, = triton_grad_func(doutput)
         grad_bias = None
 
