@@ -210,8 +210,11 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
         q, k, v = jnp.split(qkv, [1, 2], axis=2)
         dq, dk, dv = jnp.split(grad_qkv, [1, 2], axis=2)
 
-        jax.debug.print('q.max={}, k.max={}, v.max={}, output.max={}, dq.max={}, dk.max={}, dv.max={}, doutput.max={}',
-            q.max(), k.max(), v.max(), output.max(), dq.max(), dk.max(), dv.max(), doutput.max()
+        jax.debug.print(
+            'q.max={}, k.max={}, v.max={}, output.max={}, dq.max={}, dk.max={}, dv.max={}, doutput.max={}, \
+q.min={}, k.min={}, v.min={}, output.min={}, dq.min={}, dk.min={}, dv.min={}, doutput.min={}',
+            q.max(), k.max(), v.max(), output.max(), dq.max(), dk.max(), dv.max(), doutput.max(),
+            q.min(), k.min(), v.min(), output.min(), dq.min(), dk.min(), dv.min(), doutput.min(),
         )
 
     return grad_qkv, grad_bias, None, None
