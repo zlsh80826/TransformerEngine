@@ -1100,6 +1100,8 @@ class TransformerLayer(nn.Module):
                            attn_bias,
                            deterministic=deterministic,
                            decode=decode)
+        assert residual is inputs
+        print(f'{(residual is inputs)=}', flush=True)
 
         def hidden_dropout(x, deterministic):
             assert isinstance(self.hidden_dropout_dims, Sequence)

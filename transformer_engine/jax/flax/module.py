@@ -26,6 +26,10 @@ from ..softmax import is_softmax_kernel_available
 from ..sharding import MajorShardingType, ShardingType
 from ..softmax import softmax, SoftmaxType
 
+# from ..praxis.TransformerEngineBaseLayer import generate_params_init
+from praxis.base_layer import init_var
+from praxis.base_layer import BaseLayer, WeightInit, WeightHParams, WeightHParamsCollection
+
 PRNGKey = Any
 Shape = Tuple[int, ...]
 DType = jnp.dtype
@@ -45,12 +49,23 @@ def _canonicalize_tuple(x):
         return tuple(x)
     return (x,)
 
+def generate_params_init(name: str, initializer: WeightInit):
+    """generate_params_init"""
+    def kernel_init(key, shape, dtype):
+        wp = WeightHParams(shape=shape, init=initializer, dtype=dtype)
+        return init_var(wp, key, name)
+    return kernel_init
+
 
 def _obtain_default_layernorm_scale_init_if_need(original_init, zero_centered_gamma):
-    if original_init is None:
-        if not zero_centered_gamma:
-            return nn.initializers.ones
-    return nn.initializers.zeros
+    print(f'{original_init=} {zero_centered_gamma=}', flush=True)
+    scale_init = generate_params_init("ln_scale", WeightInit.Constant(0.0))
+    print(f'{scale_init=}', flush=True)
+    return scale_init
+    # if original_init is None:
+    #     if not zero_centered_gamma:
+    #         return nn.initializers.ones
+    # return nn.initializers.zeros
 
 
 def _create_layernorm_parameters(layernorm_type, shape, scale_init, scale_axes, bias_init,
@@ -259,6 +274,9 @@ class LayerNorm(nn.Module):
     def __post_init__(self):
         self.scale_init = _obtain_default_layernorm_scale_init_if_need(
             self.scale_init, self.zero_centered_gamma)
+        self.ln_bias_init = generate_params_init("ln_bias", WeightInit.Constant(0.0))
+        self.bias_init = generate_params_init("bias", WeightInit.Constant(0.0))
+        print(f'{self.scale_init=} {self.ln_bias_init=} {self.bias_init=}', flush=True)
         super().__post_init__()
 
     @nn.compact
@@ -431,8 +449,9 @@ class DenseGeneral(TransformerEngineBase):
             bias = nn_partitioning.param_with_axes('bias',
                                                    self.bias_init,
                                                    features,
-                                                   self.dtype,
+                                                   jnp.float32,
                                                    axes=self.bias_axes)
+            bias = bias.astype(self.dtype)
         else:
             bias = None
 
@@ -557,6 +576,9 @@ class LayerNormDenseGeneral(TransformerEngineBase):
             self.kernel_init = nn.initializers.variance_scaling(1.0, 'fan_in', 'truncated_normal')
         self.scale_init = _obtain_default_layernorm_scale_init_if_need(
             self.scale_init, self.zero_centered_gamma)
+        self.ln_bias_init = generate_params_init("ln_bias", WeightInit.Constant(0.0))
+        self.bias_init = generate_params_init("bias", WeightInit.Constant(0.0))
+        print(f'{self.scale_init=} {self.ln_bias_init=} {self.bias_init=}', flush=True)
         super().__post_init__()
 
     @nn.compact
@@ -656,9 +678,9 @@ class LayerNormDenseGeneral(TransformerEngineBase):
             bias = nn_partitioning.param_with_axes('bias',
                                                    self.bias_init,
                                                    features,
-                                                   self.dtype,
+                                                   jnp.float32,
                                                    axes=self.bias_axes)
-
+            bias = bias.astype(self.dtype)
         if bias is not None:
             bias_shape = (1,) * (z.ndim - bias.ndim) + bias.shape
             z += jnp.reshape(bias, bias_shape)
@@ -791,6 +813,9 @@ class LayerNormMLP(TransformerEngineBase):
             self.kernel_init = nn.initializers.variance_scaling(1.0, 'fan_in', 'truncated_normal')
         self.scale_init = _obtain_default_layernorm_scale_init_if_need(
             self.scale_init, self.zero_centered_gamma)
+        self.ln_bias_init = generate_params_init("ln_bias", WeightInit.Constant(0.0))
+        self.bias_init = generate_params_init("bias", WeightInit.Constant(0.0))
+        print(f'{self.scale_init=} {self.ln_bias_init=} {self.bias_init=}', flush=True)
         super().__post_init__()
 
     @nn.compact
@@ -966,8 +991,9 @@ class LayerNormMLP(TransformerEngineBase):
                 bias = nn_partitioning.param_with_axes('wi_bias',
                                                        self.bias_init,
                                                        intermediate_dim,
-                                                       self.dtype,
+                                                       jnp.float32,
                                                        axes=self.bias_axes_1)
+                bias = bias.astype(self.dtype)
                 bias_shape = (1,) * (x.ndim - bias.ndim) + bias.shape
                 x += jnp.reshape(bias, bias_shape)
 
@@ -1025,8 +1051,9 @@ class LayerNormMLP(TransformerEngineBase):
             if self.use_bias:
                 bias = nn_partitioning.param_with_axes('wo_bias',
                                                        self.bias_init, (hidden_size,),
-                                                       self.dtype,
+                                                       jnp.float32,
                                                        axes=self.bias_axes_2)
+                bias = bias.astype(self.dtype)
                 out += jnp.reshape(bias, (1,) * (out.ndim - 1) + (-1,))
 
         return out, ln_output    # Output, layner_norm_output

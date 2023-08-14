@@ -392,7 +392,7 @@ class CMakeBuildExtension(BuildExtension):
                     package_path = Path(self.get_ext_fullpath(ext.name))
                     install_dir = package_path.resolve().parent
                     ext._build_cmake(
-                        build_dir=build_dir,
+                        build_dir='build',
                         install_dir=install_dir,
                     )
 
