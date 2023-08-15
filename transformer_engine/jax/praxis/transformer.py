@@ -220,7 +220,8 @@ class TransformerLayer(TransformerEngineBaseLayer):
                  encoder_decoder_mask: JTensor = None,
                  deterministic: bool = False,
                  decode: bool = False,
-                 max_decode_length: bool = None) -> JTensor:
+                 max_decode_length: bool = None,
+                 paddings = None) -> JTensor:
         """__call__"""
         return self.transformerlayer(inputs, encoded, attention_mask, encoder_decoder_mask,
-                                     deterministic, decode, max_decode_length)
+                                     deterministic, decode, max_decode_length, paddings=paddings)

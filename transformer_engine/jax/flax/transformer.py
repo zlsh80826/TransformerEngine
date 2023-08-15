@@ -994,7 +994,8 @@ class TransformerLayer(nn.Module):
                  encoder_decoder_mask: Array = None,
                  deterministic: bool = False,
                  decode: bool = False,
-                 max_decode_length: bool = None):
+                 max_decode_length: bool = None,
+                 paddings: bool = None):
         """
         Transformer Layer: attention block and a feedforward network (MLP)
 
@@ -1177,7 +1178,7 @@ class TransformerLayer(nn.Module):
             bias_axes_1=(W_JOINED_AXES, W_TP_AXES),
             bias_axes_2=(W_NO_SHARD_AXES,),
             name='mlp',
-        )(mlp_input, deterministic=deterministic)
+        )(mlp_input, deterministic=deterministic, paddings=paddings)
 
         if self.apply_residual_connection_post_layernorm:
             assert ln_out is not None

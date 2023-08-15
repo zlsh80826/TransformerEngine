@@ -819,7 +819,7 @@ class LayerNormMLP(TransformerEngineBase):
         super().__post_init__()
 
     @nn.compact
-    def __call__(self, inputs: Array, deterministic: bool = False) -> Array:
+    def __call__(self, inputs: Array, deterministic: bool = False, paddings = None) -> Array:
         """
         Apply layer normalization to the input followed by a feedforward network (MLP Block).
 
@@ -1010,6 +1010,11 @@ class LayerNormMLP(TransformerEngineBase):
                 z = functools.reduce(operator.mul, activations)
                 z = jnp.reshape(z, (*z.shape[:-2], -1))
 
+            if paddings is not None:
+                print(f'!!! Apply paddings for ffn1, {paddings.shape=}', flush=True)
+                paddings = jnp.expand_dims(paddings, axis=-1)
+                z = z * (1.0 - paddings)
+
             z = nn.Dropout(rate=self.intermediate_dropout_rate,
                            broadcast_dims=self.intermediate_hidden_dropout_dims)(
                                z, deterministic=deterministic)
@@ -1055,5 +1060,9 @@ class LayerNormMLP(TransformerEngineBase):
                                                        axes=self.bias_axes_2)
                 bias = bias.astype(self.dtype)
                 out += jnp.reshape(bias, (1,) * (out.ndim - 1) + (-1,))
+
+            if paddings is not None:
+                print(f'!!! Apply paddings for ffn2, {paddings.shape=} {paddings.dtype=}', flush=True)
+                out = out * (1.0 - paddings)
 
         return out, ln_output    # Output, layner_norm_output
