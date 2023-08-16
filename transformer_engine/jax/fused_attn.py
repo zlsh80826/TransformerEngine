@@ -126,6 +126,10 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
     cu_seqlen = jnp.cumsum(seqlen)
     cu_seqlen = jnp.hstack((0, cu_seqlen))
 
+    paddings = mask[:, :, :, 0]
+    paddings = jnp.reshape(paddings, (qkv.shape[:2]))
+    paddings = paddings[:, :, jnp.newaxis, jnp.newaxis]
+
     output, softmax_aux, rng_state = self_fused_attn_fwd(qkv,
                                                          bias,
                                                          cu_seqlen,
@@ -135,12 +139,12 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
                                                          scaling_factor=scaling_factor,
                                                          dropout_probability=dropout_probability,
                                                          is_training=is_training)
-    return output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
+    return output * (1. - paddings).astype(output.dtype), (qkv, softmax_aux, rng_state, output, cu_seqlen, paddings)
 
 
 def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout_probability,
                          is_training, ctx, grad):
-    qkv, softmax_aux, rng_state, output, cu_seqlen = ctx
+    qkv, softmax_aux, rng_state, output, cu_seqlen, paddings = ctx
 
     doutput = grad
 
@@ -159,7 +163,7 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
     if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
         grad_bias = None
 
-    return grad_qkv, grad_bias, None, None
+    return grad_qkv * (1. - paddings[:, :, :, :, jnp.newaxis]).astype(grad_qkv.dtype), grad_bias, None, None
 
 
 _self_fused_attn.defvjp(_self_fused_attn_fwd, _self_fused_attn_bwd)

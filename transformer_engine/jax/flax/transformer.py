@@ -387,6 +387,9 @@ class MultiHeadAttention(nn.Module):
         def qkv_init(key, shape, dtype):
             assert len(shape) == 3
             assert shape[-2] == 3
+            print(f'!!! qkv init: {key=} {shape=} {dtype=}', flush=True)
+
+            return self.kernel_init(key, shape, dtype)
 
             q_key, k_key, v_key = jax_random.split(key, num=3)
 
@@ -397,6 +400,7 @@ class MultiHeadAttention(nn.Module):
             q_kernel = query_init(q_key, q_shape, dtype)
             k_kernel = self.kernel_init(k_key, k_shape, dtype)
             v_kernel = self.kernel_init(v_key, v_shape, dtype)
+
 
             return jnp.stack([q_kernel, k_kernel, v_kernel], axis=-2, dtype=dtype)
 
