@@ -388,6 +388,9 @@ class MultiHeadAttention(nn.Module):
             assert len(shape) == 3
             assert shape[-2] == 3
 
+            if not self.scaled_query_init:
+                return self.kernel_init(key, shape, dtype)
+
             q_key, k_key, v_key = jax_random.split(key, num=3)
 
             q_shape = (shape[0], shape[-1])
@@ -403,6 +406,8 @@ class MultiHeadAttention(nn.Module):
         def kv_init(key, shape, dtype):
             assert len(shape) == 3
             assert shape[-2] == 2
+
+            return self.kernel_init(key, shape, dtype)
 
             k_key, v_key = jax_random.split(key)
 
