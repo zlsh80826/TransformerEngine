@@ -25,6 +25,8 @@ from ..sharding import infer_sharding_type
 from ..softmax import is_softmax_kernel_available
 from ..sharding import MajorShardingType, ShardingType
 from ..softmax import softmax, SoftmaxType
+from praxis.base_layer import BaseLayer, WeightInit, WeightHParams, WeightHParamsCollection
+from praxis.layers import stats
 
 PRNGKey = Any
 Shape = Tuple[int, ...]
@@ -291,7 +293,7 @@ class LayerNorm(nn.Module):
                          dp_dim_index=1 if self.transpose_batch_sequence else 0)
 
 
-class TransformerEngineBase(nn.Module):
+class TransformerEngineBase(BaseLayer):
     """
     Base class of transformer engine
     """
@@ -380,7 +382,7 @@ class DenseGeneral(TransformerEngineBase):
         Indicate the sharding pattern.
     """
 
-    features: Union[Iterable[int], int]
+    features: Union[Iterable[int], int] = None
     kernel_init: Initializer = None
     kernel_axes: Tuple[str, ...] = ()
     use_bias: bool = True
@@ -532,7 +534,7 @@ class LayerNormDenseGeneral(TransformerEngineBase):
         Indicate the sharding pattern.
     """
 
-    features: Union[Iterable[int], int]
+    features: Union[Iterable[int], int] = None
     enable_layernorm: bool = True
     layernorm_type: str = 'layernorm'
     epsilon: float = 1e-6
@@ -561,7 +563,7 @@ class LayerNormDenseGeneral(TransformerEngineBase):
         super().__post_init__()
 
     @nn.compact
-    def __call__(self, inputs: Array) -> Array:
+    def __call__(self, inputs: Array, paddings: Array = None) -> Array:
         """
         Apply layer normalization to the input followed by a linear transformation.
 
@@ -609,6 +611,12 @@ class LayerNormDenseGeneral(TransformerEngineBase):
         if self.return_layernorm_output:
             ln_output = y
 
+        if paddings is not None:
+            ln1_stats = stats.compute_stats(y, jnp.expand_dims(paddings, -1))
+            self.add_summary('ln1_mean', ln1_stats.mean_v, verbosity=3)
+            self.add_summary('ln1_std', ln1_stats.std_v, verbosity=3)
+            self.add_summary('ln1_abs_max', ln1_stats.max_v, verbosity=3)
+
         # DenseGeneral
         features = _canonicalize_tuple(self.features)
         axis = _canonicalize_tuple(self.axis)
@@ -652,6 +660,26 @@ class LayerNormDenseGeneral(TransformerEngineBase):
             kernel = jnp.asarray(kernel, self.dtype)
             z = lax.dot_general(y, kernel, ((axis, contract_ind), ((), ())))
 
+        qw, kw, vw = jnp.split(z, [1, 2], axis=-2)
+        if paddings is not None:
+            qw_stats = stats.compute_stats(qw, jnp.expand_dims(paddings, (-1, -2)))
+            # qw_stats = stats.compute_stats(qw, None)
+            self.add_summary('qw_mean', qw_stats.mean_v, verbosity=3)
+            self.add_summary('qw_std', qw_stats.std_v, verbosity=3)
+            self.add_summary('qw_abs_max', qw_stats.max_v, verbosity=3)
+
+            kw_stats = stats.compute_stats(kw, jnp.expand_dims(paddings, (-1, -2)))
+            # kw_stats = stats.compute_stats(kw, None)
+            self.add_summary('kw_mean', kw_stats.mean_v, verbosity=3)
+            self.add_summary('kw_std', kw_stats.std_v, verbosity=3)
+            self.add_summary('kw_abs_max', kw_stats.max_v, verbosity=3)
+
+            vw_stats = stats.compute_stats(vw, jnp.expand_dims(paddings, (-1, -2)))
+            # vw_stats = stats.compute_stats(vw, None)
+            self.add_summary('vw_mean', vw_stats.mean_v, verbosity=3)
+            self.add_summary('vw_std', vw_stats.std_v, verbosity=3)
+            self.add_summary('vw_abs_max', vw_stats.max_v, verbosity=3)
+
         bias = None
         if self.use_bias:
             bias = nn_partitioning.param_with_axes('bias',
@@ -666,7 +694,15 @@ class LayerNormDenseGeneral(TransformerEngineBase):
             z += jnp.reshape(bias, bias_shape)
 
         if self.depth_scaling is not None:
+            raise NotImplementedError
             z = z / self.depth_scaling
+
+        qp, kp, vp = jnp.split(z, [1, 2], axis=-2)
+        if paddings is not None:
+            qp_stats = stats.compute_stats(qp, jnp.expand_dims(paddings, (-1, -2)))
+            self.add_summary('qp_mean', qp_stats.mean_v, verbosity=3)
+            self.add_summary('qp_std', qp_stats.std_v, verbosity=3)
+            self.add_summary('qp_abs_max', qp_stats.max_v, verbosity=3)
 
         return z, ln_output    # dense_output, layer_norm_output
 

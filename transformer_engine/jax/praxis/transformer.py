@@ -7,9 +7,11 @@ Praxis Modules related Transformer
 from functools import partial
 from typing import Optional, Sequence, Tuple
 
+import jax.numpy as jnp
 from praxis import pax_fiddle
 from praxis.base_layer import WeightInit
 from praxis.pytypes import JTensor
+from praxis.layers import stats
 
 from .module import TransformerEngineBaseLayer
 from ..flax.transformer import TransformerLayerType
@@ -220,7 +222,14 @@ class TransformerLayer(TransformerEngineBaseLayer):
                  encoder_decoder_mask: JTensor = None,
                  deterministic: bool = False,
                  decode: bool = False,
-                 max_decode_length: bool = None) -> JTensor:
+                 max_decode_length: bool = None,
+                 paddings: JTensor = None) -> JTensor:
         """__call__"""
+        if paddings is not None:
+            inputs_stats = stats.compute_stats(inputs, jnp.expand_dims(paddings, -1))
+            self.add_summary('xformer_input_mean', inputs_stats.mean_v, verbosity=3)
+            self.add_summary('xformer_input_std', inputs_stats.std_v, verbosity=3)
+            self.add_summary('xformer_input_abs_max', inputs_stats.max_v, verbosity=3)
+
         return self.transformerlayer(inputs, encoded, attention_mask, encoder_decoder_mask,
-                                     deterministic, decode, max_decode_length)
+                                     deterministic, decode, max_decode_length, paddings=paddings)

@@ -21,6 +21,9 @@ from jax import nn as jax_nn
 from jax import random as jax_random
 from jax import lax, vmap
 
+
+from praxis.base_layer import BaseLayer, WeightInit, WeightHParams, WeightHParamsCollection
+from praxis.layers import stats
 from .module import DenseGeneral, LayerNormDenseGeneral, LayerNormMLP
 from .module import LayerNorm, Softmax
 from ..fused_attn import AttnBiasType, AttnMaskType
@@ -247,7 +250,7 @@ def core_attention(query: Array,
 dynamic_vector_slice_in_dim = vmap(lax.dynamic_slice_in_dim, in_axes=(None, 0, None, None))
 
 
-class MultiHeadAttention(nn.Module):
+class MultiHeadAttention(BaseLayer):
     r"""
     Multi-head Attention (MHA), including Query,
     Key, Value and Output projection.
@@ -320,8 +323,8 @@ class MultiHeadAttention(nn.Module):
         Whether to compute attention logits in float32.
     """
 
-    head_dim: int
-    num_heads: int
+    head_dim: int = 0
+    num_heads: int = 0
     dropout_rate: float = 0.
     dropout_rng_name: str = 'dropout'
     layernorm_type: str = "layernorm"
@@ -353,7 +356,8 @@ class MultiHeadAttention(nn.Module):
                  bias: Optional[Array] = None,
                  *,
                  decode: bool = False,
-                 deterministic: bool = False) -> Array:
+                 deterministic: bool = False,
+                 paddings = None) -> Array:
         """
         MultiHeadAttention Layer:
         [Query, Key, Value projection] -> Dot Product Attention -> Output projection.
@@ -482,9 +486,16 @@ class MultiHeadAttention(nn.Module):
                     bias_init=self.bias_init,
                     bias_axes=(W_JOINED_AXES, W_TP_AXES),
                     name='qkv',
-                    dtype=self.dtype)(inputs_q)
+                    dtype=self.dtype)(inputs_q, paddings=paddings)
                 if not use_fused_attn:
                     query, key, value = jnp.split(qkv_proj, [1, 2], axis=-2)
+
+                if paddings is not None:
+                    qp3, qp3, qp3 = jnp.split(qkv_proj, [1, 2], axis=-2)
+                    qp3_stats = stats.compute_stats(qp3, jnp.expand_dims(paddings, (-1, -2)))
+                    self.add_summary('3qp_mean', qp3_stats.mean_v, verbosity=3)
+                    self.add_summary('3qp_std', qp3_stats.std_v, verbosity=3)
+                    self.add_summary('3qp_abs_max', qp3_stats.max_v, verbosity=3)
             else:
                 query, ln_out = LayerNormDenseGeneral(
                     enable_layernorm=not self.output_layernorm,
@@ -650,6 +661,26 @@ class MultiHeadAttention(nn.Module):
                 qkv_sharding_constraint = (BATCH_AXES, SEQLEN_AXES, JOINED_AXES, HEAD_AXES,
                                            HIDDEN_AXES)
                 qkv_proj = _with_sharding_constraint(qkv_proj, qkv_sharding_constraint)
+                qkv_proj = qkv_proj * (1. - jnp.expand_dims(paddings, (-1, -2, -3)))
+                assert qkv_proj.dtype == self.dtype
+                if paddings is not None:
+                    qp2, kp2, vp2 = jnp.split(qkv_proj, [1, 2], axis=-3)
+
+                    qp2_stats = stats.compute_stats(qp2) # , jnp.expand_dims(paddings, (-1, -2, -3)))
+                    self.add_summary('2qp_mean', qp2_stats.mean_v, verbosity=3)
+                    self.add_summary('2qp_std', qp2_stats.std_v, verbosity=3)
+                    self.add_summary('2qp_abs_max', qp2_stats.max_v, verbosity=3)
+
+                    kp2_stats = stats.compute_stats(kp2, jnp.expand_dims(paddings, (-1, -2, -3)))
+                    self.add_summary('2kp_mean', kp2_stats.mean_v, verbosity=3)
+                    self.add_summary('2kp_std', kp2_stats.std_v, verbosity=3)
+                    self.add_summary('2kp_abs_max', kp2_stats.max_v, verbosity=3)
+
+                    vp2_stats = stats.compute_stats(vp2, jnp.expand_dims(paddings, (-1, -2, -3)))
+                    self.add_summary('2vp_mean', vp2_stats.mean_v, verbosity=3)
+                    self.add_summary('2vp_std', vp2_stats.std_v, verbosity=3)
+                    self.add_summary('2vp_abs_max', vp2_stats.max_v, verbosity=3)
+
                 x = self_fused_attn(qkv_proj,
                                     bias,
                                     mask,
@@ -660,6 +691,11 @@ class MultiHeadAttention(nn.Module):
                                     dropout_probability=self.dropout_rate,
                                     is_training=not deterministic,
                                     sharding_type=first_sharding_type)
+                if paddings is not None:
+                    attn_stats = stats.compute_stats(x, jnp.expand_dims(paddings, (-1, -2)))
+                    self.add_summary('attn_mean', attn_stats.mean_v, verbosity=3)
+                    self.add_summary('attn_std', attn_stats.std_v, verbosity=3)
+                    self.add_summary('attn_abs_max', attn_stats.max_v, verbosity=3)
             else:
                 assert bias is None
                 query = query.reshape((*query.shape[:-1], self.num_heads, self.head_dim))
@@ -734,7 +770,7 @@ class MultiHeadAttention(nn.Module):
         return out, residual
 
 
-class RelativePositionBiases(nn.Module):
+class RelativePositionBiases(BaseLayer):
     """
     T5-style relative positional embeddings to the attention logits.
 
@@ -757,9 +793,9 @@ class RelativePositionBiases(nn.Module):
     dtype : jax.numpy.dtype, default  = jax.numpy.float32
         The data type used to allocate the initial parameters.
     """
-    num_buckets: int
-    max_distance: int
-    num_attention_heads: int
+    num_buckets: int = 0
+    max_distance: int = 0
+    num_attention_heads: int = 0
     embedding_init: Callable[..., Array] = nn.linear.default_embed_init
     embedding_axes: Tuple[str, ...] = ('heads', 'relpos_buckets')
     dtype: DType = jnp.float32
@@ -841,7 +877,7 @@ class TransformerLayerType(Enum):
     DECODER = "decoder"
 
 
-class TransformerLayer(nn.Module):
+class TransformerLayer(BaseLayer):
     r"""
     TransformerLayer is made up of a relative embedding,
     an attention block and a feedforward network (MLP).
@@ -970,7 +1006,7 @@ class TransformerLayer(nn.Module):
     layer_type: TransformerLayerType = TransformerLayerType.ENCODER
     self_attn_mask_type: str = 'causal'
     enable_relative_embedding: bool = True
-    relative_embedding: nn.Module = None
+    relative_embedding: BaseLayer = None
     dtype: DType = jnp.float32
     drop_path: float = 0.0
     fuse_qkv_params: bool = True
@@ -994,7 +1030,8 @@ class TransformerLayer(nn.Module):
                  encoder_decoder_mask: Array = None,
                  deterministic: bool = False,
                  decode: bool = False,
-                 max_decode_length: bool = None):
+                 max_decode_length: bool = None,
+                 paddings: Array = None):
         """
         Transformer Layer: attention block and a feedforward network (MLP)
 
@@ -1099,7 +1136,19 @@ class TransformerLayer(nn.Module):
                            attention_mask,
                            attn_bias,
                            deterministic=deterministic,
-                           decode=decode)
+                           decode=decode,
+                           paddings=paddings)
+
+        if paddings is not None:
+            x_stats = stats.compute_stats(x, jnp.expand_dims(paddings, -1))
+            self.add_summary('mha_out_mean', x_stats.mean_v, verbosity=3)
+            self.add_summary('mha_out_std', x_stats.std_v, verbosity=3)
+            self.add_summary('mha_out_abs_max', x_stats.max_v, verbosity=3)
+
+            r_stats = stats.compute_stats(residual, jnp.expand_dims(paddings, -1))
+            self.add_summary('mha_r_mean', r_stats.mean_v, verbosity=3)
+            self.add_summary('mha_r_std', r_stats.std_v, verbosity=3)
+            self.add_summary('mha_r_abs_max', r_stats.max_v, verbosity=3)
 
         def hidden_dropout(x, deterministic):
             assert isinstance(self.hidden_dropout_dims, Sequence)

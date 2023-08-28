@@ -122,6 +122,12 @@ def _self_fused_attn(qkv: jnp.ndarray, bias: jnp.ndarray, mask: jnp.ndarray, see
 def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, scaling_factor,
                          dropout_probability, is_training):
 
+    # assert qkv.shape == (32, 2048, 3, 12, 64)
+    # q, k, v = jnp.split(qkv, [1, 2], axis=-3)
+    # jax.debug.print('MEAN of q = {}, STD of q = {}', q.mean(dtype=jnp.float32), q.std(dtype=jnp.float32))
+    # jax.debug.print('MEAN of k = {}, STD of k = {}', k.mean(dtype=jnp.float32), k.std(dtype=jnp.float32))
+    # jax.debug.print('MEAN of v = {}, STD of v = {}', v.mean(dtype=jnp.float32), v.std(dtype=jnp.float32))
+
     seqlen = jnp.sum(mask[:, :, :, 0] == 0, axis=(-1, -2), dtype=jnp.int32)
     cu_seqlen = jnp.cumsum(seqlen)
     cu_seqlen = jnp.hstack((0, cu_seqlen))
