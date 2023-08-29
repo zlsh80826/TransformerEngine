@@ -40,6 +40,9 @@
 #define K_TRANSPOSE_ID 22
 #define dQ_ACCUM_ID 23
 
+#define FWD_VAR 1
+#define BWD_VAR 1
+
 #define VIRTUAL_ID 30
 
 namespace transformer_engine {
@@ -103,13 +106,26 @@ createQKBMM(int64_t b, int64_t h, int64_t s_q, int64_t s_kv, int64_t d,
     // Define the matmul 1 desc
     auto matmul_1_Desc = cudnn_frontend::MatMulDescBuilder()
                             .setComputeType(CUDNN_DATA_FLOAT)
+#ifdef FWD_VAR
+                            // .setPaddingValue(-1e20)
+#endif
                             .build();
+
+    int64_t seqlen_dim[4]    = {b, 1, 1, 1};
+    int64_t seqlen_stride[4] = {1, 1, 1, 1};
+
+    auto seqlenQTensor = tensor_create(CUDNN_DATA_INT32, Q_SEQLEN_ID, seqlen_dim, seqlen_stride, false, false);
+    auto seqlenKTensor = tensor_create(CUDNN_DATA_INT32, K_SEQLEN_ID, seqlen_dim, seqlen_stride, false, false);
 
     // Create a matmul 1 node
     auto matmul_op1 = cudnn_frontend::OperationBuilder(CUDNN_BACKEND_OPERATION_MATMUL_DESCRIPTOR)
                             .setaMatDesc(qTensor)
                             .setbMatDesc(kTransposeTensor)
                             .setcMatDesc(sTensor)
+#ifdef FWD_VAR
+                            .setmOverrideDesc(seqlenQTensor)
+                            // .setnOverrideDesc(seqlenKTensor)
+#endif
                             .setmatmulDesc(matmul_1_Desc)
                             .build();
 
@@ -522,11 +538,21 @@ createSVBMM(int64_t b, int64_t h, int64_t s_q, int64_t s_kv, int64_t d,
                             .setComputeType(CUDNN_DATA_FLOAT)
                             .build();
 
+    int64_t seqlen_dim[4]    = {b, 1, 1, 1};
+    int64_t seqlen_stride[4] = {1, 1, 1, 1};
+
+    auto seqlenQTensor = tensor_create(CUDNN_DATA_INT32, Q_SEQLEN_ID, seqlen_dim, seqlen_stride, false, false);
+    auto seqlenKTensor = tensor_create(CUDNN_DATA_INT32, K_SEQLEN_ID, seqlen_dim, seqlen_stride, false, false);
+
     // Create a matmul 2 node
     auto matmul_op2 = cudnn_frontend::OperationBuilder(CUDNN_BACKEND_OPERATION_MATMUL_DESCRIPTOR)
                             .setaMatDesc(afterScaleDropoutTensor)
                             .setbMatDesc(vTensor)
                             .setcMatDesc(oTensor)
+#ifdef FWD_VAR
+                            .setmOverrideDesc(seqlenQTensor)
+                            .setkOverrideDesc(seqlenKTensor)
+#endif
                             .setmatmulDesc(matmul_2_Desc)
                             .build();
 
@@ -539,6 +565,7 @@ void fused_attn_arbitrary_seqlen_fwd_impl(
                                 NVTE_QKV_Layout layout,
                                 void *devPtrQ, void *devPtrK, void *devPtrV,
                                 void *devPtrSoftmaxStats, void *devPtrO,
+                                void *devPtrCuSeqlenQ, void *devPtrCuSeqlenKV,
                                 void* devPtrDropoutSeed, void* devPtrDropoutOffset,
                                 cudnnDataType_t tensorType,
                                 void *workspace, size_t *workspace_size,
@@ -633,9 +660,22 @@ void fused_attn_arbitrary_seqlen_fwd_impl(
 
         // Exit to request upper level API to allocate memory if needed
         if (workspace == nullptr) {
-            *workspace_size = plan_workspace_size;
+            size_t actual_seqlen_workspace_size = 2 * b * sizeof(int32_t);
+            *workspace_size = plan_workspace_size + actual_seqlen_workspace_size;
             return;
         }
+
+        // Prepare actual seqlen
+        constexpr size_t nthreads_per_block = 128;
+        const size_t grid = (b + nthreads_per_block - 1) / nthreads_per_block;
+        void *devActualSeqlenQ = static_cast<int8_t *>(workspace) + plan_workspace_size;
+        void *devActualSeqlenK = static_cast<int8_t *>(devActualSeqlenQ) + b * sizeof(int32_t);
+        cu_seqlens_to_actual_seqlens<<<grid, nthreads_per_block, 0, stream>>>(
+            b, static_cast<const int32_t *>(devPtrCuSeqlenQ),
+            static_cast<const int32_t *>(devPtrCuSeqlenKV),
+            static_cast<int32_t *>(devActualSeqlenQ),
+            static_cast<int32_t *>(devActualSeqlenK));
+        NVTE_CHECK_CUDA(cudaGetLastError());
 
         std::set<std::pair<uint64_t, void*>> data_ptrs;
         // Add all the data pointers to be used in the variant pack
@@ -651,6 +691,10 @@ void fused_attn_arbitrary_seqlen_fwd_impl(
         data_ptrs.insert(std::pair<uint64_t, void*>(D_SEED_ID, devPtrDropoutSeed));
         data_ptrs.insert(std::pair<uint64_t, void*>(D_OFFSET_ID, devPtrDropoutOffset));
         data_ptrs.insert(std::pair<uint64_t, void*>(D_CONST_ID, &scale_dropout));
+#ifdef FWD_VAR
+        data_ptrs.insert(std::pair<uint64_t, void*>(Q_SEQLEN_ID, devActualSeqlenQ));
+        data_ptrs.insert(std::pair<uint64_t, void*>(K_SEQLEN_ID, devActualSeqlenK));
+#endif
 
         // If training mode, we write out softmax stats
         if (is_training) {
@@ -676,7 +720,8 @@ void fused_attn_arbitrary_seqlen_bwd_impl(
                             void* devPtrO, void* devPtrSoftmaxStats,
                             void* devPtrdQ, void* devPtrdK, void* devPtrdV, void* devPtrdO,
                             void* devPtrDropoutSeed, void* devPtrDropoutOffset,
-                            cudnnDataType_t tensorType, void *workspace, size_t *workspace_size,
+                            void *devPtrCuSeqlenQ, void *devPtrCuSeqlenKV, cudnnDataType_t tensorType,
+                            void *workspace, size_t *workspace_size,
                             cudaStream_t stream, cudnnHandle_t handle) {
     try {
         NVTE_CHECK_CUDNN(cudnnSetStream(handle, stream));
@@ -743,8 +788,18 @@ void fused_attn_arbitrary_seqlen_bwd_impl(
             generateMatrixStrides(b, h, s_q, s_kv, d, dqAccum_stride,
                             layout, NVTE_QKV_Matrix::NVTE_O_Matrix);
 
+            int64_t seqlen_dim[4] = {b, 1, 1, 1};
+            int64_t seqlen_stride[4] = {1, 1, 1, 1};
+
             int64_t scale_dim[4] = {1, 1, 1, 1};
             int64_t scale_stride[4] = {1, 1, 1, 1};
+
+#ifdef BWD_VAR
+            auto seqlenQTensor = tensor_create(CUDNN_DATA_INT32, Q_SEQLEN_ID, seqlen_dim,
+                                               seqlen_stride, false, false);
+            auto seqlenKTensor = tensor_create(CUDNN_DATA_INT32, K_SEQLEN_ID, seqlen_dim,
+                                               seqlen_stride, false, false);
+#endif
 
             /*******************************************************************************
              *                          Dot product dO * O                                */ 
@@ -826,6 +881,10 @@ void fused_attn_arbitrary_seqlen_bwd_impl(
                             .setaMatDesc(qTensor)
                             .setbMatDesc(kTransposeTensor)
                             .setcMatDesc(pTensor)
+#ifdef BWD_VAR
+                            .setmOverrideDesc(seqlenQTensor)
+                            // .setnOverrideDesc(seqlenKTensor)
+#endif
                             .setmatmulDesc(matmul_0_Desc)
                             .build();
 
@@ -933,6 +992,10 @@ void fused_attn_arbitrary_seqlen_bwd_impl(
                             .setaMatDesc(sTransposeTensor)
                             .setbMatDesc(dOTensor)
                             .setcMatDesc(dVTensor)
+#ifdef BWD_VAR
+                            .setmOverrideDesc(seqlenKTensor)
+                            .setkOverrideDesc(seqlenQTensor)
+#endif
                             .setmatmulDesc(matmul_1_Desc)
                             .build();
 
@@ -957,6 +1020,10 @@ void fused_attn_arbitrary_seqlen_bwd_impl(
                             .setaMatDesc(dOTensor)
                             .setbMatDesc(vTransposeTensor)
                             .setcMatDesc(dSTensor)
+#ifdef BWD_VAR
+                            .setmOverrideDesc(seqlenQTensor)
+                            .setnOverrideDesc(seqlenKTensor)
+#endif
                             .setmatmulDesc(matmul_2_Desc)
                             .build();
 
@@ -1061,6 +1128,10 @@ void fused_attn_arbitrary_seqlen_bwd_impl(
                                 .setaMatDesc(dPScaledTensor)
                                 .setbMatDesc(kTensor)
                                 .setcMatDesc(dqAccumTensor)
+#ifdef BWD_VAR
+                                .setmOverrideDesc(seqlenQTensor)
+                                .setkOverrideDesc(seqlenKTensor)
+#endif
                                 .setmatmulDesc(matmul_3_Desc)
                                 .build();
 
@@ -1087,6 +1158,10 @@ void fused_attn_arbitrary_seqlen_bwd_impl(
                                 .setaMatDesc(dPTransposeTensor)
                                 .setbMatDesc(qTensor)
                                 .setcMatDesc(dKTensor)
+#ifdef BWD_VAR
+                                .setmOverrideDesc(seqlenKTensor)
+                                .setkOverrideDesc(seqlenQTensor)
+#endif
                                 .setmatmulDesc(matmul_4_Desc)
                                 .build();
 
@@ -1135,9 +1210,10 @@ void fused_attn_arbitrary_seqlen_bwd_impl(
         // Exit to request upper level API to allocate memory if needed
         size_t softmaxSum_workspace_size = b * h * s_q * sizeof(float);
         size_t dqAccum_workspace_size = b * s_q * h * d * sizeof(float);
+        size_t actual_seqlen_workspace_size = 2 * b * sizeof(int32_t);
         if (workspace == nullptr) {
             *workspace_size = plan_workspace_size + softmaxSum_workspace_size
-                              + dqAccum_workspace_size;
+                              + dqAccum_workspace_size + actual_seqlen_workspace_size;
             return;
         }
 
@@ -1145,6 +1221,16 @@ void fused_attn_arbitrary_seqlen_bwd_impl(
         void *devPtrdQAccumulator = static_cast<int8_t *>(devPtrSoftmaxSum)
                                     + softmaxSum_workspace_size;
         NVTE_CHECK_CUDA(cudaMemsetAsync(devPtrdQAccumulator, 0, dqAccum_workspace_size, stream));
+
+        constexpr size_t nthreads_per_block = 128;
+        const size_t grid = (b + nthreads_per_block - 1) / nthreads_per_block;
+        void *devActualSeqlenQ = static_cast<int8_t *>(devPtrdQAccumulator) + dqAccum_workspace_size;
+        void *devActualSeqlenK = static_cast<int8_t *>(devActualSeqlenQ) + b * sizeof(int32_t);
+        cu_seqlens_to_actual_seqlens<<<grid, nthreads_per_block, 0, stream>>>(
+            b, static_cast<const int32_t *>(devPtrCuSeqlenQ),
+            static_cast<const int32_t *>(devPtrCuSeqlenKV),
+            static_cast<int32_t *>(devActualSeqlenQ), static_cast<int32_t *>(devActualSeqlenK));
+        NVTE_CHECK_CUDA(cudaGetLastError());
 
         std::set<std::pair<uint64_t, void *>> data_ptrs;
         // add all the data pointers to be used in the variant pack
@@ -1165,6 +1251,10 @@ void fused_attn_arbitrary_seqlen_bwd_impl(
         data_ptrs.insert(std::pair<uint64_t, void*>(D_SEED_ID, devPtrDropoutSeed));
         data_ptrs.insert(std::pair<uint64_t, void*>(D_OFFSET_ID, devPtrDropoutOffset));
         data_ptrs.insert(std::pair<uint64_t, void*>(MASK_VAL_ID, &negInfinity));
+#ifdef BWD_VAR
+        data_ptrs.insert(std::pair<uint64_t, void *>(Q_SEQLEN_ID, devActualSeqlenQ));
+        data_ptrs.insert(std::pair<uint64_t, void *>(K_SEQLEN_ID, devActualSeqlenK));
+#endif
 
         float scaleProb = 1.0f - dropout_probability;
         data_ptrs.insert(std::pair<uint64_t, void*>(D_CONST_ID, &scale_dropout));
@@ -1228,6 +1318,8 @@ void fused_attn_arbitrary_seqlen_fwd_qkvpacked(
         NVTE_ERROR("Unexpected Aux_CTX_Tensors->size.");
     }
 
+    void *devPtrCuSeqlen = cu_seqlens->data.dptr;
+
     void* devPtrDropoutSeed = rng_state->data.dptr;
     void* devPtrDropoutOffset = reinterpret_cast<void *>(
                     reinterpret_cast<uint64_t*>(rng_state->data.dptr) + 1);
@@ -1238,6 +1330,7 @@ void fused_attn_arbitrary_seqlen_fwd_qkvpacked(
     fused_attn_arbitrary_seqlen_fwd_impl(batch, num_head, max_seqlen, max_seqlen, head_dim,
                                 is_training, attn_scale, p_dropout, qkv_layout,
                                 devPtrQ, devPtrK, devPtrV, devPtrS, devPtrO,
+                                devPtrCuSeqlen, devPtrCuSeqlen,
                                 devPtrDropoutSeed, devPtrDropoutOffset,
                                 get_cudnn_dtype(QKV_type),
                                 workspace->data.dptr, &workspace_size, stream, handle);
@@ -1295,6 +1388,8 @@ void fused_attn_arbitrary_seqlen_bwd_qkvpacked(size_t batch, size_t max_seqlen, 
     void* devPtrDropoutOffset = reinterpret_cast<void *>(
                     reinterpret_cast<uint64_t*>(rng_state->data.dptr) + 1);
 
+    void *devPtrCuSeqlens = cu_seqlens->data.dptr;
+
     const auto qkv_type = input_QKV->data.dtype;
     size_t workspace_size = 0;
 
@@ -1303,6 +1398,7 @@ void fused_attn_arbitrary_seqlen_bwd_qkvpacked(size_t batch, size_t max_seqlen, 
                                 devPtrQ, devPtrK, devPtrV, devPtrO, devPtrSoftmaxStats,
                                 devPtrdQ, devPtrdK, devPtrdV, devPtrdO,
                                 devPtrDropoutSeed, devPtrDropoutOffset,
+                                devPtrCuSeqlens, devPtrCuSeqlens,
                                 get_cudnn_dtype(qkv_type),
                                 workspace->data.dptr, &workspace_size, stream, handle);
 
