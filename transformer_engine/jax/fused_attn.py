@@ -134,7 +134,7 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
     valid = jnp.reshape(valid, (qkv.shape[:2]))
     valid = valid[:, :].astype(qkv.dtype)
 
-	qkv *= valid
+    qkv *= valid[:, :, jnp.newaxis, jnp.newaxis, jnp.newaxis]
 
     output, softmax_aux, rng_state = self_fused_attn_fwd(qkv,
                                                          bias,
@@ -145,9 +145,9 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
                                                          scaling_factor=scaling_factor,
                                                          dropout_probability=dropout_probability,
                                                          is_training=is_training)
-    output *= valid
+    output *= valid[:, :, jnp.newaxis, jnp.newaxis]
 
-	'''
+    '''
     unfused_output = dot_product_attention(query,
                                    key,
                                    value,
@@ -162,24 +162,25 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
     nsize = jnp.size(matchmap)
     mismatch = nsize - matchmap.sum()
     mismatch_rate = mismatch/nsize
-	jax.debug.print("Fwd mismatch rate: {}/{} = {}", mismatch, nsize, mismatch_rate)
-	'''
+    jax.debug.print("Fwd mismatch rate: {}/{} = {}", mismatch, nsize, mismatch_rate)
+    '''
 
-    return output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
+    return output, (qkv, softmax_aux, rng_state, output, cu_seqlen, valid, mask, bias)
 
 
 def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout_probability,
                          is_training, ctx, grad):
-    qkv, softmax_aux, rng_state, output, cu_seqlen = ctx
+    qkv, softmax_aux, rng_state, output, cu_seqlen, valid, mask, bias = ctx
 
-    doutput = grad * valid
+    doutput = grad * valid[:, :, jnp.newaxis, jnp.newaxis]
 
     def fwd_func(qkv, mask):
         query, key, value = jnp.split(qkv, [1, 2], axis=-3)
         query = jnp.squeeze(query)
         key = jnp.squeeze(key)
         value = jnp.squeeze(value)
-		assert query.shape == key.shape == value.shape == (4, 2048, 12, 64)
+        # print(f'{query.shape=}', flush=True)
+        assert query.shape == key.shape == value.shape == (32, 2048, 12, 64)
 
         output = dot_product_attention(
             query,
@@ -189,13 +190,16 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
             mask=(mask == 0),
             deterministic=(not is_training),
             dropout_rate=dropout_probability,
-            dropout_rng=seed,
+            dropout_rng=None,
             dtype=jnp.float32).astype(query.dtype)
 
         return output.astype(qkv.dtype)
 
     unfused_output, grad_func = jax.vjp(fwd_func, qkv, mask)
     unfused_grad_qkv, _ = grad_func(doutput)
+
+    unfused_output *= valid[:, :, jnp.newaxis, jnp.newaxis]
+    unfused_grad_qkv *= valid[:, :, jnp.newaxis, jnp.newaxis, jnp.newaxis]
 
     grad_qkv, grad_bias = self_fused_attn_bwd(qkv,
                                               softmax_aux,
@@ -208,10 +212,12 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
                                               scaling_factor=scaling_factor,
                                               dropout_probability=dropout_probability,
                                               is_training=is_training)
-    grad_qkv *= valid
+    grad_qkv *= valid[:, :, jnp.newaxis, jnp.newaxis, jnp.newaxis]
 
     if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
         grad_bias = None
+
+    jax.debug.print("valid sum: {}", valid.sum(axis=-1))
 
     matchmap = jnp.isclose(output, unfused_output, rtol=1e-3, atol=1e-3)
     nsize = jnp.size(matchmap)
