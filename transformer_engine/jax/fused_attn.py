@@ -129,6 +129,12 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
     cu_seqlen = jnp.cumsum(seqlen)
     cu_seqlen = jnp.hstack((0, cu_seqlen))
 
+    paddings = mask[:, :, :, 0]
+    paddings = jnp.reshape(paddings, (qkv.shape[:2]))
+    valid = (1. - paddings).astype(qkv.dtype)
+    del paddings
+    qkv *= valid[..., jnp.newaxis, jnp.newaxis, jnp.newaxis]
+
     output, softmax_aux, rng_state = self_fused_attn_fwd(qkv,
                                                          bias,
                                                          cu_seqlen,
@@ -138,14 +144,16 @@ def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, 
                                                          scaling_factor=scaling_factor,
                                                          dropout_probability=dropout_probability,
                                                          is_training=is_training)
-    return output, (qkv, softmax_aux, rng_state, output, cu_seqlen)
+    output *= valid[..., jnp.newaxis, jnp.newaxis]
+    return output, (qkv, softmax_aux, rng_state, output, cu_seqlen, valid)
 
 
 def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout_probability,
                          is_training, ctx, grad):
-    qkv, softmax_aux, rng_state, output, cu_seqlen = ctx
+    qkv, softmax_aux, rng_state, output, cu_seqlen, valid = ctx
 
     doutput = grad
+    doutput *= valid[..., jnp.newaxis, jnp.newaxis]
 
     grad_qkv, grad_bias = self_fused_attn_bwd(qkv,
                                               softmax_aux,
@@ -158,6 +166,8 @@ def _self_fused_attn_bwd(attn_bias_type, attn_mask_type, scaling_factor, dropout
                                               scaling_factor=scaling_factor,
                                               dropout_probability=dropout_probability,
                                               is_training=is_training)
+
+    grad_qkv *= valid[..., jnp.newaxis, jnp.newaxis, jnp.newaxis]
 
     if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
         grad_bias = None

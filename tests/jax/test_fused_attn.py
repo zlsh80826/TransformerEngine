@@ -160,9 +160,6 @@ class TestSelfFusedAttn():
     @staticmethod
     def _check_inputs(s, *, attn_bias_type, attn_mask_type, backend, dropout_probability, dtype,
                       head_dim, pad_ratio):
-        if (s > 512 or backend == Backend.Arbitrary) and pad_ratio != 0:
-            pytest.skip("Arbitrary seqlen backend hasn't support padded input.")
-
         if not is_fused_attn_kernel_available(dtype, dtype, attn_bias_type, attn_mask_type,
                                               dropout_probability, s, s, head_dim):
             pytest.skip("Unsupported inputs combination or device compute capability.")
