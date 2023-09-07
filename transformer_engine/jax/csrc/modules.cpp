@@ -851,6 +851,8 @@ void SelfFusedAttnBackward(cudaStream_t stream, void **buffers, const char *opaq
     auto mask_type = descriptor.mask_type;
     constexpr auto qkv_layout = NVTE_QKV_Layout::NVTE_QKV_INTERLEAVED;
 
+    cudaMemsetAsync(dqkv, 0, batch * q_max_seqlen * 3 * num_head * head_dim * 2, stream);
+
     NVTE_CHECK(q_max_seqlen == kv_max_seqlen,
                "q_max_seqlen should be equal to kv_max_seqlen in the self attention.");
 
