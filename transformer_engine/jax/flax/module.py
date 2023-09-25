@@ -779,6 +779,7 @@ class LayerNormMLP(TransformerEngineBase):
     bias_axes_2: Tuple[str, ...] = ('embed',)
     return_layernorm_output: bool = True
     activations: Sequence[Union[str, Callable]] = ('relu',)
+    intermediate_dropout_rng_name: str = 'dropout'
     intermediate_dropout_rate: float = 0.1
     intermediate_hidden_dropout_dims: Sequence[int] = ()
     axis: Union[Iterable[int], int] = -1
@@ -985,7 +986,8 @@ class LayerNormMLP(TransformerEngineBase):
                 z = jnp.reshape(z, (*z.shape[:-2], -1))
 
             z = nn.Dropout(rate=self.intermediate_dropout_rate,
-                           broadcast_dims=self.intermediate_hidden_dropout_dims)(
+                           broadcast_dims=self.intermediate_hidden_dropout_dims,
+                           rng_collection=self.intermediate_dropout_rng_name)(
                                z, deterministic=deterministic)
 
             # DenseGeneral 2
