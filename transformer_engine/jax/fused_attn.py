@@ -114,18 +114,14 @@ def self_fused_attn(qkv: jnp.ndarray,
 def _self_fused_attn(qkv: jnp.ndarray, bias: jnp.ndarray, mask: jnp.ndarray, seed: jnp.ndarray,
                      attn_bias_type: AttnBiasType, attn_mask_type: AttnMaskType,
                      scaling_factor: float, dropout_probability: float, is_training: bool):
-    output, _ = _self_fused_attn_fwd(qkv,
-                                     bias,
-                                     mask,
-                                     seed,
-                                     attn_bias_type=attn_bias_type,
-                                     attn_mask_type=attn_mask_type,
-                                     scaling_factor=scaling_factor,
-                                     dropout_probability=dropout_probability,
-                                     is_training=is_training)
+    output, _ = _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type,
+                                     scaling_factor, dropout_probability, is_training)
     return output
 
 
+@partial(jax.checkpoint,
+         static_argnums=(4, 5, 6, 7, 8),
+         policy=jax.checkpoint_policies.save_anything_except_these_names(''))
 def _self_fused_attn_fwd(qkv, bias, mask, seed, attn_bias_type, attn_mask_type, scaling_factor,
                          dropout_probability, is_training):
 
