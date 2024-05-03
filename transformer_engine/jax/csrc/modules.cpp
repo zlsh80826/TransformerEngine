@@ -1379,13 +1379,16 @@ void FusedAttnForward(cudaStream_t stream, void **buffers, const char *opaque, s
     void *bias = buffers[3];
     void *q_cu_seqlens = buffers[4];
     void *kv_cu_seqlens = buffers[5];
-    void *seed = buffers[6];
+    void *q_seq_offsets = buffers[6];
+    void *k_seq_offsets = buffers[7];
+    void *v_seq_offsets = buffers[8];
+    void *seed = buffers[9];
 
     /* Output buffer from XLA */
-    void *output = buffers[7];
-    void *softmax_aux = buffers[8];
-    void *rng_state = buffers[9];
-    void *workspace = buffers[10];
+    void *output = buffers[10];
+    void *softmax_aux = buffers[11];
+    void *rng_state = buffers[12];
+    void *workspace = buffers[13];
 
     /* Descriptor */
     auto input_batch = descriptor.input_batch;
@@ -1559,11 +1562,14 @@ void FusedAttnBackward(cudaStream_t stream, void **buffers, const char *opaque, 
     void *doutput = buffers[7];
     void *q_cu_seqlens = buffers[8];
     void *kv_cu_seqlens = buffers[9];
+    void *q_seq_offsets = buffers[10];
+    void *k_seq_offsets = buffers[11];
+    void *v_seq_offsets = buffers[12];
 
     /* Output buffer from XLA */
-    /* Buffers[10-12] are dq, dk, dv, which are parsed later for different qkv_layout */
-    void *dbias = buffers[13];
-    void *workspace = buffers[14];
+    /* Buffers[13-15] are dq, dk, dv, which are parsed later for different qkv_layout */
+    void *dbias = buffers[16];
+    void *workspace = buffers[17];
 
     /* Descriptor */
     auto input_batch = descriptor.input_batch;
@@ -1617,7 +1623,7 @@ void FusedAttnBackward(cudaStream_t stream, void **buffers, const char *opaque, 
         auto qkv = buffers[0];
         auto qkv_shape = std::vector<size_t>{input_batch * q_max_seqlen, 3, attn_heads, head_dim};
         auto qkv_tensor = TensorWrapper(qkv, qkv_shape, dtype);
-        auto dqkv = buffers[10];
+        auto dqkv = buffers[13];
         auto dqkv_tensor = TensorWrapper(dqkv, qkv_shape, dtype);
         nvte_fused_attn_bwd_qkvpacked(
             qkv_tensor.data(), output_tensor.data(), doutput_tensor.data(),
@@ -1636,9 +1642,9 @@ void FusedAttnBackward(cudaStream_t stream, void **buffers, const char *opaque, 
         auto kv_shape =
             std::vector<size_t>{input_batch * kv_max_seqlen, 2, num_gqa_groups, head_dim};
         auto kv_tensor = TensorWrapper(kv, kv_shape, dtype);
-        auto dq = buffers[10];
+        auto dq = buffers[13];
         auto dq_tensor = TensorWrapper(dq, q_shape, dtype);
-        auto dkv = buffers[11];
+        auto dkv = buffers[14];
         auto dkv_tensor = TensorWrapper(dkv, kv_shape, dtype);
         nvte_fused_attn_bwd_kvpacked(
             q_tensor.data(), kv_tensor.data(), output_tensor.data(), doutput_tensor.data(),
@@ -1660,11 +1666,11 @@ void FusedAttnBackward(cudaStream_t stream, void **buffers, const char *opaque, 
         auto v = buffers[2];
         auto v_shape = k_shape;
         auto v_tensor = TensorWrapper(v, v_shape, dtype);
-        auto dq = buffers[10];
+        auto dq = buffers[13];
         auto dq_tensor = TensorWrapper(dq, q_shape, dtype);
-        auto dk = buffers[11];
+        auto dk = buffers[14];
         auto dk_tensor = TensorWrapper(dk, k_shape, dtype);
-        auto dv = buffers[12];
+        auto dv = buffers[15];
         auto dv_tensor = TensorWrapper(dv, v_shape, dtype);
         nvte_fused_attn_bwd(q_tensor.data(), k_tensor.data(), v_tensor.data(), output_tensor.data(),
                             doutput_tensor.data(),
