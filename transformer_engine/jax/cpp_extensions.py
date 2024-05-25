@@ -1981,13 +1981,14 @@ class FusedAttnFwdPrimitive(BasePrimitive):
     """
     name = "te_fused_attn_forward"
     multiple_results = True
-    impl_static_args = (10, 11, 12, 13, 14, 15)
+    impl_static_args = (11, 12, 13, 14, 15, 16)
     inner_primitive = None
     outer_primitive = None
 
     @staticmethod
-    def abstract(q_aval, k_aval, v_aval, bias_aval, q_seqlen_or_cu_seqlen_aval,
-                 kv_seqlen_or_cu_seqlen_aval, _q_seq_offsets, _k_seq_offsets, _v_seq_offsets,
+    def abstract(q_aval, k_aval, v_aval, bias_aval,
+                 q_seqlen_or_cu_seqlen_aval, kv_seqlen_or_cu_seqlen_aval,
+                 _q_seq_offsets, _k_seq_offsets, _v_seq_offsets, _o_seq_offsets,
                  seed_aval, *, attn_bias_type, attn_mask_type, qkv_layout, scaling_factor,
                  dropout_probability, is_training):
         """
@@ -2058,14 +2059,16 @@ class FusedAttnFwdPrimitive(BasePrimitive):
         return out_aval, softmax_aux_aval, rng_state_aval
 
     @staticmethod
-    def lowering(ctx, q, k, v, bias, q_cu_seqlen, kv_cu_seqlen, q_seq_offsets, k_seq_offsets,
-                 v_seq_offsets, seed, *, attn_bias_type, attn_mask_type, qkv_layout, scaling_factor,
+    def lowering(ctx, q, k, v, bias, q_cu_seqlen, kv_cu_seqlen,
+                 q_seq_offsets, k_seq_offsets, v_seq_offsets, o_seq_offsets,
+                 seed, *, attn_bias_type, attn_mask_type, qkv_layout, scaling_factor,
                  dropout_probability, is_training):
         """
         Fused attention fwd lowering rules
         """
         operands = [
-            q, k, v, bias, q_cu_seqlen, kv_cu_seqlen, q_seq_offsets, k_seq_offsets, v_seq_offsets,
+            q, k, v, bias, q_cu_seqlen, kv_cu_seqlen,
+            q_seq_offsets, k_seq_offsets, v_seq_offsets, o_seq_offsets,
             seed
         ]
         operand_shapes = map(lambda x: x.type.shape, operands)
@@ -2101,7 +2104,8 @@ class FusedAttnFwdPrimitive(BasePrimitive):
         return out
 
     @staticmethod
-    def impl(q, k, v, bias, q_seqlen, kv_seqlen, q_seq_offsets, k_seq_offsets, v_seq_offsets, seed,
+    def impl(q, k, v, bias, q_seqlen, kv_seqlen,
+             q_seq_offsets, k_seq_offsets, v_seq_offsets, o_seq_offsets, seed,
              attn_bias_type, attn_mask_type, qkv_layout, scaling_factor, dropout_probability,
              is_training):
         assert FusedAttnFwdPrimitive.inner_primitive is not None
@@ -2119,6 +2123,7 @@ class FusedAttnFwdPrimitive(BasePrimitive):
             q_seq_offsets,
             k_seq_offsets,
             v_seq_offsets,
+            o_seq_offsets,
             seed,
             attn_bias_type=attn_bias_type,
             attn_mask_type=attn_mask_type,
@@ -2203,14 +2208,15 @@ class FusedAttnBwdPrimitive(BasePrimitive):
     """
     name = "te_fused_attn_backward"
     multiple_results = True
-    impl_static_args = (13, 14, 15, 16, 17, 18)
+    impl_static_args = (14, 15, 16, 17, 18, 19)
     inner_primitive = None
     outer_primitive = None
 
     @staticmethod
     def abstract(q_aval, k_aval, v_aval, bias_aval, softmax_aux_aval, rng_state_aval, output_aval,
                  doutput_aval, q_seqlen_or_cu_seqlen_aval, kv_seqlen_or_cu_seqlen_aval,
-                 _q_seq_offsets, _k_seq_offsets, _v_seq_offsets, *, attn_bias_type, attn_mask_type,
+                 _q_seq_offsets, _k_seq_offsets, _v_seq_offsets, _o_seq_offsets, *,
+                 attn_bias_type, attn_mask_type,
                  qkv_layout, scaling_factor, dropout_probability, is_training):
         """
         Fused attention bwd abstract
@@ -2262,14 +2268,15 @@ class FusedAttnBwdPrimitive(BasePrimitive):
 
     @staticmethod
     def lowering(ctx, q, k, v, bias, softmax_aux, rng_state, output, doutput, q_cu_seqlen,
-                 kv_cu_seqlen, q_seq_offsets, k_seq_offsets, v_seq_offsets, *, attn_bias_type,
-                 attn_mask_type, qkv_layout, scaling_factor, dropout_probability, is_training):
+                 kv_cu_seqlen, q_seq_offsets, k_seq_offsets, v_seq_offsets, o_seq_offsets, *,
+                 attn_bias_type, attn_mask_type, qkv_layout, scaling_factor, dropout_probability,
+                 is_training):
         """
         Fused attention bwd lowering rules
         """
         operands = [
             q, k, v, bias, softmax_aux, rng_state, output, doutput, q_cu_seqlen, kv_cu_seqlen,
-            q_seq_offsets, k_seq_offsets, v_seq_offsets
+            q_seq_offsets, k_seq_offsets, v_seq_offsets, o_seq_offsets
         ]
         operand_shapes = map(lambda x: x.type.shape, operands)
         out_types = [
@@ -2307,8 +2314,8 @@ class FusedAttnBwdPrimitive(BasePrimitive):
 
     @staticmethod
     def impl(q, k, v, bias, softmax_aux, rng_state, output, doutput, q_seqlen, kv_seqlen,
-             q_seq_offsets, k_seq_offsets, v_seq_offsets, attn_bias_type, attn_mask_type,
-             qkv_layout, scaling_factor, dropout_probability, is_training):
+             q_seq_offsets, k_seq_offsets, v_seq_offsets, o_seq_offsets, attn_bias_type,
+             attn_mask_type, qkv_layout, scaling_factor, dropout_probability, is_training):
         assert FusedAttnBwdPrimitive.inner_primitive is not None
 
         q_cu_seqlen = generate_cu_seqlen(q_seqlen)
@@ -2328,6 +2335,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
             q_seq_offsets,
             k_seq_offsets,
             v_seq_offsets,
+            o_seq_offsets,
             attn_bias_type=attn_bias_type,
             attn_mask_type=attn_mask_type,
             qkv_layout=qkv_layout,
@@ -2384,7 +2392,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
         out_shardings = (dq_sharding, dk_sharding, dv_sharding, dbias_sharding)
 
         def sharded_impl(q, k, v, bias, softmax_aux, rng_state, output, doutput, q_cu_seqlen,
-                         kv_cu_seqlen, q_seq_offsets, k_seq_offsets, v_seq_offsets):
+                         kv_cu_seqlen, q_seq_offsets, k_seq_offsets, v_seq_offsets, o_seq_offsets):
             local_dq, local_dk, local_dv, local_dbias = FusedAttnBwdPrimitive.impl(
                 q,
                 k,
@@ -2399,6 +2407,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
                 q_seq_offsets,
                 k_seq_offsets,
                 v_seq_offsets,
+                o_seq_offsets,
                 attn_bias_type=attn_bias_type,
                 attn_mask_type=attn_mask_type,
                 qkv_layout=qkv_layout,
@@ -2444,6 +2453,7 @@ def fused_attn_fwd_qkvpacked(qkv: jnp.ndarray, bias: jnp.ndarray, seqlen: jnp.nd
                                                       dummy_seq_offset,
                                                       dummy_seq_offset,
                                                       dummy_seq_offset,
+                                                      dummy_seq_offset,
                                                       seed,
                                                       attn_bias_type=attn_bias_type,
                                                       attn_mask_type=attn_mask_type,
@@ -2482,6 +2492,7 @@ def fused_attn_bwd_qkvpacked(qkv: jnp.ndarray, bias: jnp.ndarray, softmax_aux: j
         dummy_seq_offset,
         dummy_seq_offset,
         dummy_seq_offset,
+        dummy_seq_offset,
         attn_bias_type=attn_bias_type,
         attn_mask_type=attn_mask_type,
         qkv_layout=NVTE_QKV_Layout.NVTE_BS3HD,
@@ -2516,6 +2527,7 @@ def fused_attn_fwd_kvpacked(q: jnp.ndarray, kv: jnp.ndarray, bias: jnp.ndarray,
                                                       bias,
                                                       q_seqlen,
                                                       kv_seqlen,
+                                                      dummy_seq_offset,
                                                       dummy_seq_offset,
                                                       dummy_seq_offset,
                                                       dummy_seq_offset,
@@ -2559,6 +2571,7 @@ def fused_attn_bwd_kvpacked(q: jnp.ndarray, kv: jnp.ndarray, bias: jnp.ndarray,
         dummy_seq_offset,
         dummy_seq_offset,
         dummy_seq_offset,
+        dummy_seq_offset,
         attn_bias_type=attn_bias_type,
         attn_mask_type=attn_mask_type,
         qkv_layout=NVTE_QKV_Layout.NVTE_BSHD_BS2HD,
@@ -2593,6 +2606,7 @@ def fused_attn_fwd(q: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray, bias: jnp.nda
         bias,
         q_seqlen,
         kv_seqlen,
+        dummy_seq_offset,
         dummy_seq_offset,
         dummy_seq_offset,
         dummy_seq_offset,
@@ -2632,6 +2646,7 @@ def fused_attn_bwd(q: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray, bias: jnp.nda
         doutput,
         q_seqlen,
         kv_seqlen,
+        dummy_seq_offset,
         dummy_seq_offset,
         dummy_seq_offset,
         dummy_seq_offset,
