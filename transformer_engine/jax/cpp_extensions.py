@@ -4,7 +4,7 @@
 """JAX te custom call"""
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
-from typing import Tuple, Sequence, Union, Callable
+from typing import Callable, Optional, Sequence, Tuple, Union
 from functools import partial, reduce
 import operator
 import os
@@ -2431,235 +2431,176 @@ class FusedAttnBwdPrimitive(BasePrimitive):
 register_primitive(FusedAttnBwdPrimitive)
 
 
-def fused_attn_fwd_qkvpacked(qkv: jnp.ndarray, bias: jnp.ndarray, seqlen: jnp.ndarray,
-                             seed: jnp.ndarray, attn_bias_type: NVTE_Bias_Type,
-                             attn_mask_type: NVTE_Mask_Type, scaling_factor: float,
-                             dropout_probability: float, is_training: bool):
-    """
-    Wrapper for TE self fused attention fwd
-    Return BMM1 -> (PreBias) -> ScaleMaskSoftmax -> (PostBias) -> (Dropout) -> BMM2
-    """
-    seqlen = jnp.hstack((0, seqlen))    # To make seqlen/cu_seqlen has the same shape
-
-    checker = _FusedAttnRNGStateChecker()
-    seed = checker.check_seed(seed, dropout_probability, is_training)
-
-    if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
-        assert bias is None
-        bias = jnp.zeros(0, dtype=qkv.dtype)
-
-    _not_used = jnp.zeros(0, qkv.dtype)
-    dummy_seq_offset = jnp.zeros(0, jnp.int32)
-    is_ragged = False
-    return FusedAttnFwdPrimitive.outer_primitive.bind(qkv,
-                                                      _not_used,
-                                                      _not_used,
-                                                      bias,
-                                                      seqlen,
-                                                      seqlen,
-                                                      dummy_seq_offset,
-                                                      dummy_seq_offset,
-                                                      dummy_seq_offset,
-                                                      dummy_seq_offset,
-                                                      seed,
-                                                      attn_bias_type=attn_bias_type,
-                                                      attn_mask_type=attn_mask_type,
-                                                      qkv_layout=NVTE_QKV_Layout.NVTE_BS3HD,
-                                                      scaling_factor=scaling_factor,
-                                                      dropout_probability=dropout_probability,
-                                                      is_training=is_training,
-                                                      is_ragged=is_ragged)
-
-
-def fused_attn_bwd_qkvpacked(qkv: jnp.ndarray, bias: jnp.ndarray, softmax_aux: jnp.ndarray,
-                             rng_state: jnp.ndarray, output: jnp.ndarray, doutput: jnp.ndarray,
-                             seqlen: jnp.ndarray, attn_bias_type: NVTE_Bias_Type,
-                             attn_mask_type: NVTE_Mask_Type, scaling_factor: float,
-                             dropout_probability: float, is_training: bool):
-    """
-    Wrapper for TE self fused attention bwd
-    Return the gradients of self fused attention with packed qkv input
-    """
-    seqlen = jnp.hstack((0, seqlen))    # To make seqlen/cu_seqlen has the same shape
-    if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
-        assert bias is None
-        bias = jnp.zeros(0, dtype=qkv.dtype)
-    _not_used = jnp.zeros(0, dtype=qkv.dtype)
-    dummy_seq_offset = jnp.zeros(0, jnp.int32)
-    is_ragged = False
-    dqkv, *_, dbias = FusedAttnBwdPrimitive.outer_primitive.bind(
-        qkv,
-        _not_used,
-        _not_used,
-        bias,
-        softmax_aux,
-        rng_state,
-        output,
-        doutput,
-        seqlen,
-        seqlen,
-        dummy_seq_offset,
-        dummy_seq_offset,
-        dummy_seq_offset,
-        dummy_seq_offset,
-        attn_bias_type=attn_bias_type,
-        attn_mask_type=attn_mask_type,
-        qkv_layout=NVTE_QKV_Layout.NVTE_BS3HD,
-        scaling_factor=scaling_factor,
-        dropout_probability=dropout_probability,
-        is_training=is_training,
-        is_ragged=is_ragged)
-    return dqkv, dbias
-
-
-def fused_attn_fwd_kvpacked(q: jnp.ndarray, kv: jnp.ndarray, bias: jnp.ndarray,
-                            q_seqlen: jnp.ndarray, kv_seqlen: jnp.ndarray, seed: jnp.ndarray,
-                            attn_bias_type: NVTE_Bias_Type, attn_mask_type: NVTE_Mask_Type,
-                            scaling_factor: float, dropout_probability: float, is_training: bool):
-    """
-    Wrapper for TE fused attention fwd with kvpacked inputs
-    Return BMM1 -> (PreBias) -> ScaleMaskSoftmax -> (PostBias) -> (Dropout) -> BMM2
-    """
-    q_seqlen = jnp.hstack((0, q_seqlen))    # To make seqlen/cu_seqlen has the same shape
-    kv_seqlen = jnp.hstack((0, kv_seqlen))    # To make seqlen/cu_seqlen has the same shape
-
-    checker = _FusedAttnRNGStateChecker()
-    seed = checker.check_seed(seed, dropout_probability, is_training)
-
-    if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
-        assert bias is None
-        bias = jnp.zeros(0, dtype=q.dtype)
-
-    _not_used = jnp.zeros(0, q.dtype)
-    dummy_seq_offset = jnp.zeros(0, jnp.int32)
-    is_ragged = False
-    return FusedAttnFwdPrimitive.outer_primitive.bind(q,
-                                                      kv,
-                                                      _not_used,
-                                                      bias,
-                                                      q_seqlen,
-                                                      kv_seqlen,
-                                                      dummy_seq_offset,
-                                                      dummy_seq_offset,
-                                                      dummy_seq_offset,
-                                                      dummy_seq_offset,
-                                                      seed,
-                                                      attn_bias_type=attn_bias_type,
-                                                      attn_mask_type=attn_mask_type,
-                                                      qkv_layout=NVTE_QKV_Layout.NVTE_BSHD_BS2HD,
-                                                      scaling_factor=scaling_factor,
-                                                      dropout_probability=dropout_probability,
-                                                      is_training=is_training,
-                                                      is_ragged=is_ragged)
-
-
-def fused_attn_bwd_kvpacked(q: jnp.ndarray, kv: jnp.ndarray, bias: jnp.ndarray,
-                            softmax_aux: jnp.ndarray, rng_state: jnp.ndarray, output: jnp.ndarray,
-                            doutput: jnp.ndarray, q_seqlen: jnp.ndarray, kv_seqlen: jnp.ndarray,
-                            attn_bias_type: NVTE_Bias_Type, attn_mask_type: NVTE_Mask_Type,
-                            scaling_factor: float, dropout_probability: float, is_training: bool):
-    """
-    Wrapper for TE fused attention bwd with kvpacked inputs
-    Return the gradients of fused attention with packed kv input
-    """
-    q_seqlen = jnp.hstack((0, q_seqlen))    # To make seqlen/cu_seqlen has the same shape
-    kv_seqlen = jnp.hstack((0, kv_seqlen))    # To make seqlen/cu_seqlen has the same shape
-
-    if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
-        assert bias is None
-        bias = jnp.zeros(0, dtype=q.dtype)
-
-    _not_used = jnp.zeros(0, q.dtype)
-    dummy_seq_offset = jnp.zeros(0, jnp.int32)
-    is_ragged = False
-    dq, dkv, _, dbias = FusedAttnBwdPrimitive.outer_primitive.bind(
-        q,
-        kv,
-        _not_used,
-        bias,
-        softmax_aux,
-        rng_state,
-        output,
-        doutput,
-        q_seqlen,
-        kv_seqlen,
-        dummy_seq_offset,
-        dummy_seq_offset,
-        dummy_seq_offset,
-        dummy_seq_offset,
-        attn_bias_type=attn_bias_type,
-        attn_mask_type=attn_mask_type,
-        qkv_layout=NVTE_QKV_Layout.NVTE_BSHD_BS2HD,
-        scaling_factor=scaling_factor,
-        dropout_probability=dropout_probability,
-        is_training=is_training,
-        is_ragged=is_ragged)
-    return dq, dkv, dbias
-
-
-def fused_attn_fwd(q: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray, bias: jnp.ndarray,
-                   q_seqlen: jnp.ndarray, kv_seqlen: jnp.ndarray, seed: jnp.ndarray,
+def fused_attn_fwd(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray],
+                   q_seqlen: jnp.ndarray, kv_seqlen: jnp.ndarray,
+                   q_seq_offsets: Optional[jnp.ndarray], kv_seq_offsets: Optional[jnp.ndarray],
+                   seed: Optional[jnp.ndarray],
                    attn_bias_type: NVTE_Bias_Type, attn_mask_type: NVTE_Mask_Type,
-                   scaling_factor: float, dropout_probability: float, is_training: bool):
+                   qkv_layout: NVTE_QKV_Layout, scaling_factor: float, dropout_probability: float,
+                   is_training: bool) -> jnp.ndarray:
     """
-    Wrapper for TE fused attention fwd, where query, key, value are seperated tensors
-    Return BMM1 -> (PreBias) -> ScaleMaskSoftmax -> (PostBias) -> (Dropout) -> BMM2
-    """
-    q_seqlen = jnp.hstack((0, q_seqlen))    # To make seqlen/cu_seqlen has the same shape
-    kv_seqlen = jnp.hstack((0, kv_seqlen))    # To make seqlen/cu_seqlen has the same shape
+    Perform the forward pass of with cuDNN fused attention implementations.
 
-    checker = _FusedAttnRNGStateChecker()
-    seed = checker.check_seed(seed, dropout_probability, is_training)
+    This function implements the following formula:
+        BMM1 -> (PreBias) -> ScaleMaskSoftmax -> (PostBias) -> (Dropout) -> BMM2
+    Args:
+        qkv (Tuple[jnp.ndarray, ...]): A tuple containing query, key, and value tensors.
+        It supports three formats:
+            - `(qkv_packed,)`: For interleaved QKV packed format, typically used when query, key,
+              and value have the same shape (e.g., self-attention).
+            - `(query, kv_packed)`: For separate query and KV packed format, typically used when
+              query has a different shape (e.g., cross-attention).
+            - `(query, key, value)`: For separate query, key, and value tensors.
+        bias (Optional[jnp.ndarray]): An optional bias tensor to be added to the attention scores.
+        q_seqlen (jnp.ndarray): Sequence lengths for the query, with shape [batch,].
+        kv_seqlen (jnp.ndarray): Sequence lengths for the key and value, with shape [batch,].
+        q_seq_offsets (jnp.ndarray):
+            The offsets in the sequence dim for the query, with shape [batch + 1,].
+        kv_seq_offsets (jnp.ndarray):
+            The offsets in the sequence dim for the query, with shape [batch + 1,].
+        seed (Optional[jnp.ndarray]): Optional random seed for dropout.
+        attn_bias_type (NVTE_Bias_Type): Type of attention bias.
+        attn_mask_type (NVTE_Mask_Type): Type of attention mask.
+        qkv_layout (NVTE_QKV_Layout): Layout of the QKV tensors.
+        scaling_factor (float): Scaling factor for the attention scores.
+        dropout_probability (float): Dropout probability to apply during attention.
+        is_training (bool): Flag indicating whether the model is in training mode.
+    Returns:
+        (jnp.ndarray): The output tensor from the fused attention.
+    """
+    seed = _FusedAttnRNGStateChecker().check_seed(seed, dropout_probability, is_training)
+
+    if (q_seq_offsets is None) != (kv_seq_offsets is None):
+        raise ArgumentValidationError(
+            "Both q_seq_offsets and kv_seq_offsets must be either None or have values.")
+    is_ragged = q_seq_offsets is not None
+
+    # cuDNN examples uses int32, may need to use int64 in the future
+    index_type = jnp.int32
+    # For optional tensors, which custom calls doesn't support None
+    _not_used = jnp.zeros(0, dtype=qkv[0].dtype)
+    match qkv_layout:
+        case NVTE_QKV_Layout.NVTE_BS3HD | NVTE_QKV_Layout.NVTE_T3HD:
+            assert len(qkv) == 1, f"qkv=(packed_qkv,) is accepted with {qkv_layout=}"
+            qkv_for_primitive = [*qkv, _not_used, _not_used]
+            if is_ragged:
+                # Handle cuDNN's ragged_offset
+                q_seq_offsets = \
+                    (reduce(operator.mul, qkv[0].shape[-3:]) * q_seq_offsets).astype(index_type)
+                k_seq_offsets = v_seq_offsets = \
+                    (reduce(operator.mul, qkv[0].shape[-3:]) * kv_seq_offsets).astype(index_type)
+                o_seq_offsets = q_seq_offsets // 3
+        case NVTE_QKV_Layout.NVTE_BSHD_BS2HD | NVTE_QKV_Layout.NVTE_THD_T2HD:
+            assert len(qkv) == 2, f"qkv=(query, packed_kv) is accepted with {qkv_layout=}"
+            qkv_for_primitive = [*qkv, _not_used]
+            if is_ragged:
+                # Handle cuDNN's ragged_offset
+                o_seq_offsets = q_seq_offsets = \
+                    (reduce(operator.mul, qkv[0].shape[-2:]) * q_seq_offsets).astype(index_type)
+                k_seq_offsets = v_seq_offsets = \
+                    (reduce(operator.mul, qkv[1].shape[-3:]) * kv_seq_offsets).astype(index_type)
+        case NVTE_QKV_Layout.NVTE_BSHD_BSHD_BSHD | NVTE_QKV_Layout.NVTE_THD_THD_THD:
+            assert len(qkv) == 3, f"qkv=(query, key, value) is accepted with {qkv_layout=}"
+            qkv_for_primitive = qkv
+            if is_ragged:
+                # Handle cuDNN's ragged_offset
+                o_seq_offsets = q_seq_offsets = \
+                    (reduce(operator.mul, qkv[0].shape[-2:]) * q_seq_offsets).astype(index_type)
+                k_seq_offsets = v_seq_offsets = \
+                    (reduce(operator.mul, qkv[1].shape[-2:]) * kv_seq_offsets).astype(index_type)
 
     if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
         assert bias is None
-        bias = jnp.zeros(0, dtype=q.dtype)
+        bias = jnp.zeros(0, dtype=qkv[0].dtype)
 
-    dummy_seq_offset = jnp.zeros(0, jnp.int32)
-    is_ragged = False
+    q_seqlen = jnp.hstack((0, q_seqlen))    # To make seqlen/cu_seqlen has the same shape
+    kv_seqlen = jnp.hstack((0, kv_seqlen))    # To make seqlen/cu_seqlen has the same shape
+
     return FusedAttnFwdPrimitive.outer_primitive.bind(
-        q,
-        k,
-        v,
+        *qkv_for_primitive,
         bias,
         q_seqlen,
         kv_seqlen,
-        dummy_seq_offset,
-        dummy_seq_offset,
-        dummy_seq_offset,
-        dummy_seq_offset,
+        q_seq_offsets if is_ragged else _not_used,
+        k_seq_offsets if is_ragged else _not_used,
+        v_seq_offsets if is_ragged else _not_used,
+        o_seq_offsets if is_ragged else _not_used,
         seed,
         attn_bias_type=attn_bias_type,
         attn_mask_type=attn_mask_type,
-        qkv_layout=NVTE_QKV_Layout.NVTE_BSHD_BSHD_BSHD,
+        qkv_layout=qkv_layout,
         scaling_factor=scaling_factor,
         dropout_probability=dropout_probability,
         is_training=is_training,
         is_ragged=is_ragged)
 
 
-def fused_attn_bwd(q: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray, bias: jnp.ndarray,
+def fused_attn_bwd(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray],
                    softmax_aux: jnp.ndarray, rng_state: jnp.ndarray, output: jnp.ndarray,
                    doutput: jnp.ndarray, q_seqlen: jnp.ndarray, kv_seqlen: jnp.ndarray,
+                   q_seq_offsets: Optional[jnp.ndarray], kv_seq_offsets: Optional[jnp.ndarray],
                    attn_bias_type: NVTE_Bias_Type, attn_mask_type: NVTE_Mask_Type,
-                   scaling_factor: float, dropout_probability: float, is_training: bool):
+                   qkv_layout: NVTE_QKV_Layout, scaling_factor: float, dropout_probability: float,
+                   is_training: bool):
     """
-    Wrapper for TE fused attention bwd
-    Return the gradients of fused attention with seperated query, key, value tensors
+    Perform the backward pass of the cuDNN fused attention implementations.
+
+    Args:
+        qkv (Tuple[jnp.ndarray, ...]): A tuple containing the original query, key, and value tensors
+        used in the forward pass. It supports three formats:
+            - `(qkv_packed,)`: For interleaved QKV packed format, typically used when query, key,
+              and value have the same shape (e.g., self-attention).
+            - `(query, kv_packed)`: For separate query and KV packed format, typically used when
+              query has a different shape (e.g., cross-attention).
+            - `(query, key, value)`: For separate query, key, and value tensors.
+        bias (Optional[jnp.ndarray]): An optional bias tensor to be added to the attention scores.
+        softmax_aux (jnp.ndarray): Auxiliary tensors from the softmax step used in the forward pass.
+        rng_state (jnp.ndarray): Auxiliary tensors to save the random state in the forward pass.
+        output (jnp.ndarray): The output tensor from the forward pass.
+        doutput (jnp.ndarray): The gradient with respect to the output.
+        q_seqlen (jnp.ndarray): Sequence lengths for the query, with shape [batch,].
+        kv_seqlen (jnp.ndarray): Sequence lengths for the key and value, with shape [batch,].
+        q_seq_offsets (jnp.ndarray):
+            The offsets in the sequence dim for the query, with shape [batch + 1,].
+        kv_seq_offsets (jnp.ndarray):
+            The offsets in the sequence dim for the query, with shape [batch + 1,].
+        attn_bias_type (NVTE_Bias_Type): Type of attention bias.
+        attn_mask_type (NVTE_Mask_Type): Type of attention mask.
+        qkv_layout (NVTE_QKV_Layout): Layout of the QKV tensors.
+        scaling_factor (float): Scaling factor for the attention scores.
+        dropout_probability (float): Dropout probability to apply during attention.
+        is_training (bool): Flag indicating whether the model is in training mode.
+
+    Returns:
+        Tuple[jnp.ndarray, ...], jnp.ndarray:
+        - The first tuple contains the gradients with respect to the input `qkv` tensors in the
+          same format as the input `qkv`.
+        - The second value is the gradient with respect to `bias`, or `None` if `bias` is `None`.
     """
-    q_seqlen = jnp.hstack((0, q_seqlen))    # To make seqlen/cu_seqlen has the same shape
-    kv_seqlen = jnp.hstack((0, kv_seqlen))    # To make seqlen/cu_seqlen has the same shape
+
+    _not_used = jnp.zeros(0, dtype=qkv[0].dtype)
+    match qkv_layout:
+        case NVTE_QKV_Layout.NVTE_BS3HD | NVTE_QKV_Layout.NVTE_T3HD:
+            assert len(qkv) == 1, f"qkv=(packed_qkv,) is accepted with {qkv_layout=}"
+            qkv_for_primitive = [*qkv, _not_used, _not_used]
+        case NVTE_QKV_Layout.NVTE_BSHD_BS2HD | NVTE_QKV_Layout.NVTE_THD_T2HD:
+            assert len(qkv) == 2, f"qkv=(query, packed_kv) is accepted with {qkv_layout=}"
+            qkv_for_primitive = [*qkv, _not_used]
+        case NVTE_QKV_Layout.NVTE_BSHD_BSHD_BSHD | NVTE_QKV_Layout.NVTE_THD_THD_THD:
+            assert len(qkv) == 3, f"qkv=(query, key, value) is accepted with {qkv_layout=}"
+            qkv_for_primitive = qkv
 
     if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
         assert bias is None
-        bias = jnp.zeros(0, dtype=q.dtype)
+        bias = jnp.zeros(0, dtype=qkv[0].dtype)
+
+    q_seqlen = jnp.hstack((0, q_seqlen))    # To make seqlen/cu_seqlen has the same shape
+    kv_seqlen = jnp.hstack((0, kv_seqlen))    # To make seqlen/cu_seqlen has the same shape
 
     dummy_seq_offset = jnp.zeros(0, jnp.int32)
     is_ragged = False
-    return FusedAttnBwdPrimitive.outer_primitive.bind(
-        q,
-        k,
-        v,
+    *qkv_grads, bias_grad = FusedAttnBwdPrimitive.outer_primitive.bind(
+        *qkv_for_primitive,
         bias,
         softmax_aux,
         rng_state,
@@ -2673,11 +2614,12 @@ def fused_attn_bwd(q: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray, bias: jnp.nda
         dummy_seq_offset,
         attn_bias_type=attn_bias_type,
         attn_mask_type=attn_mask_type,
-        qkv_layout=NVTE_QKV_Layout.NVTE_BSHD_BSHD_BSHD,
+        qkv_layout=qkv_layout,
         scaling_factor=scaling_factor,
         dropout_probability=dropout_probability,
         is_training=is_training,
         is_ragged=is_ragged)
+    return tuple(qkv_grads[:len(qkv)]), bias_grad
 
 
 class ActLuPrimitive(BasePrimitive):

@@ -144,14 +144,14 @@ def customcall_fused_dpa(query, key, value, bias, q_token, kv_token, dropout_rng
         case QKVLayout.BS3HD:
             query, key, value = map(partial(jnp.expand_dims, axis=-3), [query, key, value])
             qkv = jnp.concatenate((query, key, value), axis=-3)
-            return fused_attn_qkvpacked(qkv, bias, mask, dropout_rng, **kwargs).astype(query.dtype)
+            return fused_attn_qkvpacked(qkv, bias, mask, None, None, None, None, dropout_rng, **kwargs).astype(query.dtype)
         case QKVLayout.BSHD_BS2HD:
             key, value = map(partial(jnp.expand_dims, axis=-3), [key, value])
             kv = jnp.concatenate((key, value), axis=-3)
-            return fused_attn_kvpacked(query, kv, bias, mask, dropout_rng,
+            return fused_attn_kvpacked(query, kv, bias, mask, None, None, None, None, dropout_rng,
                                        **kwargs).astype(query.dtype)
         case QKVLayout.BSHD_BSHD_BSHD:
-            return fused_attn(query, key, value, bias, mask, dropout_rng,
+            return fused_attn(query, key, value, bias, mask, None, None, None, None, dropout_rng,
                               **kwargs).astype(query.dtype)
 
 
