@@ -19,7 +19,7 @@ from jax import value_and_grad, jit
 from jax.typing import ArrayLike, DTypeLike
 
 from transformer_engine.jax.fused_attn import AttnBiasType, AttnMaskType, QKVLayout
-from transformer_engine.jax.fused_attn import fused_attn_qkvpacked, fused_attn_kvpacked, fused_attn
+from transformer_engine.jax.fused_attn import fused_attn
 from transformer_engine.jax.cpp_extensions import FusedAttnHelper
 
 from transformer_engine_jax import NVTE_Fused_Attn_Backend
@@ -99,6 +99,7 @@ def make_decoder_mask(q_tokens: ArrayLike, kv_tokens: ArrayLike) -> Array:
     inv_padding_mask = make_attention_mask(q_tokens > 0, kv_tokens > 0)
     return combine_masks(inv_causal_mask, inv_padding_mask)
 
+
 def make_mask(q_token: ArrayLike, kv_token: ArrayLike, attn_mask_type: AttnMaskType) -> Array:
     """
     Create attention mask based on mask type. A `True` value in the mask means
@@ -111,6 +112,7 @@ def make_mask(q_token: ArrayLike, kv_token: ArrayLike, attn_mask_type: AttnMaskT
         inv_mask = make_attention_mask(q_token > 0, kv_token > 0)
     mask = jnp.logical_not(inv_mask)
     return mask
+
 
 def jax_dpa(query, key, value, bias, q_token, kv_token, dropout_rng, **kwargs):
     """
@@ -139,27 +141,29 @@ def customcall_fused_dpa(query, key, value, bias, q_token, kv_token, dropout_rng
     attn_mask_type = kwargs['attn_mask_type']
     mask = make_mask(q_token, kv_token, attn_mask_type)
 
-    qkv_layout = kwargs.pop('qkv_layout')
+    qkv_layout = kwargs['qkv_layout']
     match qkv_layout:
         case QKVLayout.BS3HD:
             query, key, value = map(partial(jnp.expand_dims, axis=-3), [query, key, value])
             qkv = jnp.concatenate((query, key, value), axis=-3)
-            return fused_attn_qkvpacked(qkv, bias, mask, None, None, None, None, dropout_rng, **kwargs).astype(query.dtype)
+            return fused_attn((qkv,), bias, mask, None, None, None, None, dropout_rng,
+                              **kwargs).astype(query.dtype)
         case QKVLayout.BSHD_BS2HD:
             key, value = map(partial(jnp.expand_dims, axis=-3), [key, value])
             kv = jnp.concatenate((key, value), axis=-3)
-            return fused_attn_kvpacked(query, kv, bias, mask, None, None, None, None, dropout_rng,
-                                       **kwargs).astype(query.dtype)
-        case QKVLayout.BSHD_BSHD_BSHD:
-            return fused_attn(query, key, value, bias, mask, None, None, None, None, dropout_rng,
+            return fused_attn((query, kv), bias, mask, None, None, None, None, dropout_rng,
                               **kwargs).astype(query.dtype)
+        case QKVLayout.BSHD_BSHD_BSHD:
+            return fused_attn((query, key, value), bias, mask, None, None, None, None, dropout_rng,
+                              **kwargs).astype(query.dtype)
+        case _:
+            raise ValueError(f'Unsupported {qkv_layout=}')
 
 
 class BiasShape(Enum):
     """
     Enum class to represent the different bias shapes used in the fused attention.
     """
-
     BIAS_1HSS = '1HSS'
     BIAS_B1SS = 'B1SS'
     BIAS_BHSS = 'BHSS'
@@ -422,7 +426,6 @@ class TestFusedAttn:
     """
     Fused attention tester
     """
-
     @staticmethod
     @pytest.mark.parametrize('is_training', [
         pytest.param(True, id='TRAINING'),

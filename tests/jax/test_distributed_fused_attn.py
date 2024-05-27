@@ -16,7 +16,7 @@ from distributed_test_base import compare_ops
 from utils import make_causal_mask, make_self_mask
 from transformer_engine.jax import fp8_autocast
 from transformer_engine.jax.fused_attn import is_fused_attn_kernel_available
-from transformer_engine.jax.fused_attn import fused_attn_qkvpacked, fused_attn_kvpacked
+from transformer_engine.jax.fused_attn import fused_attn
 from transformer_engine.jax.fused_attn import AttnBiasType, AttnMaskType, QKVLayout
 
 DTYPES = [jnp.float16, jnp.bfloat16]
@@ -86,15 +86,20 @@ class TestDistributedSelfAttn:
 
         def target_func(qkv, bias, mask):
             return jnp.mean(
-                fused_attn_qkvpacked(qkv,
-                                     bias,
-                                     mask,
-                                     None,
-                                     attn_bias_type=attn_bias_type,
-                                     attn_mask_type=attn_mask_type,
-                                     scaling_factor=scaling_factor,
-                                     dropout_probability=dropout_prob,
-                                     is_training=is_training))
+                fused_attn((qkv,),
+                            bias,
+                            mask,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            attn_bias_type=attn_bias_type,
+                            attn_mask_type=attn_mask_type,
+                            qkv_layout=QKVLayout.BS3HD,
+                            scaling_factor=scaling_factor,
+                            dropout_probability=dropout_prob,
+                            is_training=is_training))
 
         def ref_func(qkv, bias, mask):
             query, key, value = jnp.split(qkv, [1, 2], axis=-3)
@@ -192,16 +197,20 @@ class TestDistributedCrossAttn:
 
         def target_func(q, kv, mask):
             return jnp.mean(
-                fused_attn_kvpacked(q,
-                                    kv,
-                                    None,
-                                    mask,
-                                    None,
-                                    attn_bias_type=attn_bias_type,
-                                    attn_mask_type=attn_mask_type,
-                                    scaling_factor=scaling_factor,
-                                    dropout_probability=dropout_prob,
-                                    is_training=is_training))
+                fused_attn((q, kv),
+                            None,
+                            mask,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            attn_bias_type=attn_bias_type,
+                            attn_mask_type=attn_mask_type,
+                            qkv_layout=QKVLayout.BSHD_BS2HD,
+                            scaling_factor=scaling_factor,
+                            dropout_probability=dropout_prob,
+                            is_training=is_training))
 
         def ref_func(query, kv, mask):
             key, value = jnp.split(kv, [1], axis=-3)

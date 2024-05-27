@@ -26,7 +26,7 @@ from .module import DenseGeneral, LayerNormDenseGeneral, LayerNormMLP
 from .module import LayerNorm, Softmax
 from ..fused_attn import AttnBiasType, AttnMaskType, QKVLayout
 from ..fused_attn import is_fused_attn_kernel_available, canonicalize_attn_mask_type
-from ..fused_attn import fused_attn_qkvpacked, fused_attn_kvpacked, fused_attn
+from ..fused_attn import fused_attn
 from ..softmax import SoftmaxType
 from ..sharding import num_of_devices
 from ..sharding import get_sharding_map_logic_axis_to_mesh_axis
@@ -260,6 +260,7 @@ class _FusedDotProductAttention(nn.Module):    # pylint: disable=too-few-public-
             scale_factor = self.scale_factor
         del self.scale_factor
 
+        # TODO(rewang): integrate THD format
         if self.qkv_layout == QKVLayout.BS3HD:
             """qkvpacked format, treat
             query: qkvpacked tensor, shape = [..., 3, h, d]
@@ -269,15 +270,20 @@ class _FusedDotProductAttention(nn.Module):    # pylint: disable=too-few-public-
             qkv_packed = query
             if self.transpose_batch_sequence:
                 qkv_packed = qkv_packed.transpose([1, 0, 2, 3, 4])
-            x = fused_attn_qkvpacked(qkv_packed,
-                                     bias,
-                                     mask,
-                                     seed,
-                                     attn_mask_type=self.attn_mask_type,
-                                     attn_bias_type=self.attn_bias_type,
-                                     scaling_factor=scale_factor,
-                                     dropout_probability=self.attention_dropout,
-                                     is_training=not deterministic)
+            x = fused_attn((qkv_packed,),
+                           bias,
+                           mask,
+                           None,
+                           None,
+                           None,
+                           None,
+                           seed,
+                           attn_mask_type=self.attn_mask_type,
+                           attn_bias_type=self.attn_bias_type,
+                           qkv_layout=self.qkv_layout,
+                           scaling_factor=scale_factor,
+                           dropout_probability=self.attention_dropout,
+                           is_training=not deterministic)
         elif self.qkv_layout == QKVLayout.BSHD_BS2HD:
             """kvpacked format, treat
             query: query tensor, shape = [..., h, d]
@@ -288,29 +294,36 @@ class _FusedDotProductAttention(nn.Module):    # pylint: disable=too-few-public-
             if self.transpose_batch_sequence:
                 query = query.transpose([1, 0, 2, 3])
                 kv_packed = kv_packed.transpose([1, 0, 2, 3, 4])
-            x = fused_attn_kvpacked(query,
-                                    kv_packed,
-                                    bias,
-                                    mask,
-                                    seed,
-                                    attn_mask_type=self.attn_mask_type,
-                                    attn_bias_type=self.attn_bias_type,
-                                    scaling_factor=scale_factor,
-                                    dropout_probability=self.attention_dropout,
-                                    is_training=not deterministic)
+            x = fused_attn((query, kv_packed),
+                            bias,
+                            mask,
+                            None,
+                            None,
+                            None,
+                            None,
+                            seed,
+                            attn_mask_type=self.attn_mask_type,
+                            attn_bias_type=self.attn_bias_type,
+                            qkv_layout=self.qkv_layout,
+                            scaling_factor=scale_factor,
+                            dropout_probability=self.attention_dropout,
+                            is_training=not deterministic)
         elif self.qkv_layout == QKVLayout.BSHD_BSHD_BSHD:
             if self.transpose_batch_sequence:
                 query = query.transpose([1, 0, 2, 3])
                 key = key.transpose([1, 0, 2, 3])
                 value = value.transpose([1, 0, 2, 3])
-            x = fused_attn(query,
-                           key,
-                           value,
+            x = fused_attn((query, key, value),
                            bias,
                            mask,
+                           None,
+                           None,
+                           None,
+                           None,
                            seed,
                            attn_mask_type=self.attn_mask_type,
                            attn_bias_type=self.attn_bias_type,
+                           qkv_layout=self.qkv_layout,
                            scaling_factor=scale_factor,
                            dropout_probability=self.attention_dropout,
                            is_training=not deterministic)

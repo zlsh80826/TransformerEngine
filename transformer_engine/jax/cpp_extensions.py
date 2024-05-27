@@ -2244,6 +2244,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
 
         input_batch = FusedAttnHelper.get_real_batch(q_seqlen_or_cu_seqlen_aval,
                                                      kv_seqlen_or_cu_seqlen_aval)
+
         wkspace_shape, wkspace_dtype = \
             transformer_engine_jax.get_fused_attn_bwd_workspace_sizes(
                 input_batch, bias_batch, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups,
@@ -2581,13 +2582,16 @@ def fused_attn_bwd(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray],
     _not_used = jnp.zeros(0, dtype=qkv[0].dtype)
     match qkv_layout:
         case NVTE_QKV_Layout.NVTE_BS3HD | NVTE_QKV_Layout.NVTE_T3HD:
-            assert len(qkv) == 1, f"qkv=(packed_qkv,) is accepted with {qkv_layout=}"
+            assert len(qkv) == 1, \
+                f"qkv needs to be (packed_qkv,) with {qkv_layout=} but got {qkv=}"
             qkv_for_primitive = [*qkv, _not_used, _not_used]
         case NVTE_QKV_Layout.NVTE_BSHD_BS2HD | NVTE_QKV_Layout.NVTE_THD_T2HD:
-            assert len(qkv) == 2, f"qkv=(query, packed_kv) is accepted with {qkv_layout=}"
+            assert len(qkv) == 2, \
+                f"qkv needs to be (query, packed_kv) is accepted with {qkv_layout=} but got {qkv=}"
             qkv_for_primitive = [*qkv, _not_used]
         case NVTE_QKV_Layout.NVTE_BSHD_BSHD_BSHD | NVTE_QKV_Layout.NVTE_THD_THD_THD:
-            assert len(qkv) == 3, f"qkv=(query, key, value) is accepted with {qkv_layout=}"
+            assert len(qkv) == 3, \
+                f"qkv needs to be (query, key, value) is accepted with {qkv_layout=} but got {qkv=}"
             qkv_for_primitive = qkv
 
     if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
