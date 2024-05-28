@@ -1972,6 +1972,7 @@ def generate_cu_seqlen(actual_seqlen):
     Generating cumsum seqlen for a batch
     """
     cu_seqlen = jnp.cumsum(actual_seqlen)
+    cu_seqlen = jnp.hstack((0, cu_seqlen))
     return cu_seqlen
 
 
@@ -2514,9 +2515,6 @@ def fused_attn_fwd(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray],
         assert bias is None
         bias = jnp.zeros(0, dtype=qkv[0].dtype)
 
-    q_seqlen = jnp.hstack((0, q_seqlen))    # To make seqlen/cu_seqlen has the same shape
-    kv_seqlen = jnp.hstack((0, kv_seqlen))    # To make seqlen/cu_seqlen has the same shape
-
     return FusedAttnFwdPrimitive.outer_primitive.bind(
         *qkv_for_primitive,
         bias,
@@ -2597,9 +2595,6 @@ def fused_attn_bwd(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray],
     if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
         assert bias is None
         bias = jnp.zeros(0, dtype=qkv[0].dtype)
-
-    q_seqlen = jnp.hstack((0, q_seqlen))    # To make seqlen/cu_seqlen has the same shape
-    kv_seqlen = jnp.hstack((0, kv_seqlen))    # To make seqlen/cu_seqlen has the same shape
 
     dummy_seq_offset = jnp.zeros(0, jnp.int32)
     is_ragged = False
