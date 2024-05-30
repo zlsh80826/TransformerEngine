@@ -14,6 +14,7 @@ from transformer_engine_jax import NVTE_Bias_Type
 from transformer_engine_jax import NVTE_Mask_Type
 from transformer_engine_jax import NVTE_QKV_Layout
 from transformer_engine_jax import NVTE_QKV_Format
+from transformer_engine_jax import nvte_get_qkv_format
 
 from .cpp_extensions import FusedAttnHelper
 from .cpp_extensions import fused_attn_fwd, fused_attn_bwd
@@ -51,6 +52,17 @@ class QKVLayout(Enum):
     T3HD = NVTE_QKV_Layout.NVTE_T3HD
     THD_T2HD = NVTE_QKV_Layout.NVTE_THD_T2HD
     THD_THD_THD = NVTE_QKV_Layout.NVTE_THD_THD_THD
+
+
+class QKVFormat(Enum):
+    """QKV format"""
+    SBHD = NVTE_QKV_Format.NVTE_SBHD
+    BSHD = NVTE_QKV_Format.NVTE_BSHD
+    THD = NVTE_QKV_Format.NVTE_THD
+
+
+def get_qkv_format(qkv_layout):
+    return QKVFormat(nvte_get_qkv_format(qkv_layout.value))
 
 
 def canonicalize_attn_mask_type(attn_mask_type: str):

@@ -18,8 +18,8 @@ from jax import Array
 from jax import value_and_grad, jit
 from jax.typing import ArrayLike, DTypeLike
 
-from transformer_engine.jax.fused_attn import AttnBiasType, AttnMaskType, QKVLayout
-from transformer_engine.jax.fused_attn import fused_attn
+from transformer_engine.jax.fused_attn import AttnBiasType, AttnMaskType, QKVLayout, QKVFormat
+from transformer_engine.jax.fused_attn import fused_attn, get_qkv_format
 from transformer_engine.jax.cpp_extensions import FusedAttnHelper
 
 from transformer_engine_jax import NVTE_Fused_Attn_Backend
@@ -114,13 +114,25 @@ def make_mask(q_token: ArrayLike, kv_token: ArrayLike, attn_mask_type: AttnMaskT
     return mask
 
 
-def jax_dpa(query, key, value, bias, q_token, kv_token, dropout_rng, **kwargs):
+def get_seqlens_and_offsets(segment_ids):
+    batch, max_seqlen = segment_ids.shape
+    bincount_vmap = jax.vmap(partial(jnp.bincount, length=max_seqlen))
+    seqlens_with_zero = bincount_vmap(segment_ids.astype(jnp.int32))
+    seqlens = seqlens_with_zero[..., 1:]
+    def _find_offsets(x):
+        same_as_previous = jnp.logical_and(x[..., 1:] != x[..., :-1], x[..., 1:] != 0)
+        first_column = jnp.ones((x.shape[0], 1), dtype=bool)
+        same_as_previous = jnp.hstack((first_column, same_as_previous))
+        return jax.vmap(partial(jnp.argwhere, size=x.shape[1], fill_value=-1))(same_as_previous).squeeze(-1)
+    offsets = _find_offsets(segment_ids)
+    offsets_2d = jnp.where(offsets >= 0, offsets + (jnp.arange(batch) * max_seqlen)[..., jnp.newaxis], offsets)
+    return seqlens, offsets_2d
+
+
+def jax_dpa(query, key, value, bias, mask, dropout_rng, **kwargs):
     """
     JAX native dot product attention implementation
     """
-    attn_mask_type = kwargs['attn_mask_type']
-    mask = make_mask(q_token, kv_token, attn_mask_type)
-
     output = general_dot_product_attention(query,
                                            key,
                                            value,
@@ -134,30 +146,26 @@ def jax_dpa(query, key, value, bias, q_token, kv_token, dropout_rng, **kwargs):
     return output.astype(query.dtype)
 
 
-def customcall_fused_dpa(query, key, value, bias, q_token, kv_token, dropout_rng, **kwargs):
+def customcall_fused_dpa(query, key, value, bias, mask, seqlens_q, seqlens_kv, offsets_q, offsets_kv, dropout_rng, **kwargs):
     """
     TE customcall dot product attention implementation
     """
-    attn_mask_type = kwargs['attn_mask_type']
-    mask = make_mask(q_token, kv_token, attn_mask_type)
-
     qkv_layout = kwargs['qkv_layout']
+    common_args = [bias, mask, seqlens_q, seqlens_kv, offsets_q, offsets_kv, dropout_rng]
     match qkv_layout:
-        case QKVLayout.BS3HD:
+        case QKVLayout.BS3HD | QKVLayout.T3HD:
             query, key, value = map(partial(jnp.expand_dims, axis=-3), [query, key, value])
             qkv = jnp.concatenate((query, key, value), axis=-3)
-            return fused_attn((qkv,), bias, mask, None, None, None, None, dropout_rng,
-                              **kwargs).astype(query.dtype)
-        case QKVLayout.BSHD_BS2HD:
+            qkv_args = (qkv,)
+        case QKVLayout.BSHD_BS2HD | QKVLayout.THD_T2HD:
             key, value = map(partial(jnp.expand_dims, axis=-3), [key, value])
             kv = jnp.concatenate((key, value), axis=-3)
-            return fused_attn((query, kv), bias, mask, None, None, None, None, dropout_rng,
-                              **kwargs).astype(query.dtype)
-        case QKVLayout.BSHD_BSHD_BSHD:
-            return fused_attn((query, key, value), bias, mask, None, None, None, None, dropout_rng,
-                              **kwargs).astype(query.dtype)
+            qkv_args = (query, kv)
+        case QKVLayout.BSHD_BSHD_BSHD | QKVLayout.THD_THD_THD:
+            qkv_args = (query, key, value)
         case _:
             raise ValueError(f'Unsupported {qkv_layout=}')
+    return fused_attn(qkv_args, *common_args, **kwargs).astype(query.dtype)
 
 
 class BiasShape(Enum):
@@ -190,11 +198,15 @@ class FusedAttnRunner:
     bias_shape: BiasShape
 
     def _check_configs(self):
-        if self.qkv_layout == QKVLayout.BS3HD and self.num_heads_q != self.num_heads_kv:
-            pytest.skip("BS3HD layout requires num_heads_q and num_heads_kv to be equal.")
-
-        if self.qkv_layout == QKVLayout.BS3HD and self.max_seqlen_q != self.max_seqlen_kv:
-            pytest.skip("BS3HD layout requires max_seqlen_q and max_seqlen_kv to be equal.")
+        # TODO(rewang): probably adds this in is_fused_attn_available
+        if (get_qkv_format(self.qkv_layout) == QKVFormat.THD and not
+            self.attn_mask_type in [AttnMaskType.PADDING_MASK, AttnMaskType.PADDING_CAUSAL_MASK]):
+            pytest.skip("THD format requires padding masks.")
+        if self.qkv_layout == QKVLayout.BS3HD or self.qkv_layout == QKVLayout.T3HD:
+            if self.num_heads_q != self.num_heads_kv:
+                pytest.skip("QKVPACKED layout requires num_heads_q and num_heads_kv to be equal.")
+            if self.max_seqlen_q != self.max_seqlen_kv:
+                pytest.skip("QKVPACKED layout requires max_seqlen_q and max_seqlen_kv to be equal.")
 
         self.backend = FusedAttnHelper(self.dtype, self.dtype, self.qkv_layout.value,
                                        self.attn_bias_type.value, self.attn_mask_type.value,
@@ -268,6 +280,15 @@ class FusedAttnRunner:
         self.valid_len_q, self.token_q = gen_valid(self.batch_size, self.max_seqlen_q, pad_ratio)
         self.valid_len_kv, self.token_kv = gen_valid(self.batch_size, self.max_seqlen_kv, pad_ratio)
 
+        self.mask = make_mask(self.token_q, self.token_kv, self.attn_mask_type)
+        if get_qkv_format(self.qkv_layout) == QKVFormat.THD:
+            self.seqlens_q, self.offsets_q = get_seqlens_and_offsets(self.token_q)
+            self.seqlens_kv, self.offsets_kv = get_seqlens_and_offsets(self.token_kv)
+            self.mask_for_customcall = None  # THD format doesn't support mask
+        else:
+            self.seqlens_q = self.seqlens_kv = self.offsets_q = self.offsets_kv = None
+            self.mask_for_customcall = self.mask
+
         self.dropout_rng = dropout_key if self.dropout_prob > 0 else None
         self.scaling_factor = 1. / sqrt(self.head_dim)
 
@@ -277,7 +298,11 @@ class FusedAttnRunner:
         """
         self._setup_inputs()
 
-        args = [self.q, self.k, self.v, self.bias, self.token_q, self.token_kv, self.dropout_rng]
+        args = [self.q, self.k, self.v, self.bias, self.mask, self.dropout_rng]
+        customcall_args = [
+            self.q, self.k, self.v, self.bias, self.mask_for_customcall,
+            self.seqlens_q, self.seqlens_kv, self.offsets_q, self.offsets_kv, self.dropout_rng
+        ]
         kwargs = {
             'attn_bias_type': self.attn_bias_type,
             'attn_mask_type': self.attn_mask_type,
@@ -288,7 +313,7 @@ class FusedAttnRunner:
         }
 
         # Convert the outputs to float32 for the elementwise comparison
-        primitive_out = customcall_fused_dpa(*args, **kwargs).astype(jnp.float32)
+        primitive_out = customcall_fused_dpa(*customcall_args, **kwargs).astype(jnp.float32)
         reference_out = jax_dpa(*args, **kwargs).astype(jnp.float32)
 
         if self.is_training and self.dropout_prob > 0.:
@@ -297,8 +322,11 @@ class FusedAttnRunner:
         primitive_valid, primitive_invalid = jnp.split(primitive_out, (self.valid_len_q,), axis=1)
         reference_valid, _ = jnp.split(reference_out, (self.valid_len_q,), axis=1)
 
-        assert_allclose(primitive_invalid, jnp.zeros_like(primitive_invalid), dtype=self.dtype)
+        # TODO(rewang): check
+        if get_qkv_format(self.qkv_layout) != QKVFormat.THD:
+            assert_allclose(primitive_invalid, jnp.zeros_like(primitive_invalid), dtype=self.dtype)
         assert_allclose(primitive_valid, reference_valid, dtype=self.dtype)
+
 
     def test_backward(self):
         """
@@ -318,7 +346,11 @@ class FusedAttnRunner:
             ret_valid, _ = jnp.split(func(*args, **kwargs), (self.valid_len_q,), axis=1)
             return (jnp.mean(ret_valid, dtype=jnp.float32) * gradient_multiplier).astype(self.dtype)
 
-        args = [self.q, self.k, self.v, self.bias, self.token_q, self.token_kv, self.dropout_rng]
+        args = [self.q, self.k, self.v, self.bias, self.mask, self.dropout_rng]
+        customcall_args = [
+            self.q, self.k, self.v, self.bias, self.mask_for_customcall,
+            self.seqlens_q, self.seqlens_kv, self.offsets_q, self.offsets_kv, self.dropout_rng
+        ]
         kwargs = {
             'attn_bias_type': self.attn_bias_type,
             'attn_mask_type': self.attn_mask_type,
@@ -341,7 +373,7 @@ class FusedAttnRunner:
                 lambda q, k, v, bias, *args: grad_func(jax_dpa, q, k, v, bias, *args, **kwargs),
                 arg_nums))
 
-        primitive_out, primitive_dgrad = jitted_primitive(*args)
+        primitive_out, primitive_dgrad = jitted_primitive(*customcall_args)
         reference_out, reference_dgrad = jitted_reference(*args)
 
         # Skip elementwise comparison when dropout enabled
@@ -356,8 +388,11 @@ class FusedAttnRunner:
             primitive_valid, primitive_invalid = jnp.split(primitive, (valid_len,), axis=1)
             reference_valid, reference_invalid = jnp.split(reference, (valid_len,), axis=1)
 
-            assert_allclose(primitive_invalid, jnp.zeros_like(primitive_invalid), dtype=self.dtype)
-            assert_allclose(primitive_invalid, reference_invalid, dtype=self.dtype)
+            # TODO(rewang): check
+            if get_qkv_format(self.qkv_layout) != QKVFormat.THD:
+                assert_allclose(primitive_invalid, jnp.zeros_like(primitive_invalid),
+                                dtype=self.dtype)
+                assert_allclose(primitive_invalid, reference_invalid, dtype=self.dtype)
             assert_allclose(primitive_valid, reference_valid, dtype=self.dtype)
 
         # Convert the outputs to float32 for the elementwise comparison
@@ -405,6 +440,9 @@ class FusedAttnRunner:
     pytest.param(QKVLayout.BS3HD, id='QKV_PACKED'),
     pytest.param(QKVLayout.BSHD_BS2HD, id='KV_PACKED'),
     pytest.param(QKVLayout.BSHD_BSHD_BSHD, id='SEPARATE'),
+    pytest.param(QKVLayout.T3HD, id='RAGGED_QKV_PACKED'),
+    pytest.param(QKVLayout.THD_T2HD, id='RAGGED_KV_PACKED'),
+    pytest.param(QKVLayout.THD_THD_THD, id='RAGGED_SEPARATE'),
 ])
 @pytest.mark.parametrize('dtype', [
     pytest.param(jnp.bfloat16, id="BF16"),

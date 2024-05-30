@@ -26,8 +26,10 @@ from transformer_engine_jax import DType as TEDType
 from transformer_engine_jax import NVTE_Bias_Type
 from transformer_engine_jax import NVTE_Mask_Type
 from transformer_engine_jax import NVTE_QKV_Layout
+from transformer_engine_jax import NVTE_QKV_Format
 from transformer_engine_jax import NVTE_Fused_Attn_Backend
 from transformer_engine_jax import NVTE_Activation_Type
+from transformer_engine_jax import nvte_get_qkv_format
 
 from .sharding import all_reduce_max_along_all_axes_except_PP
 from .sharding import all_reduce_sum_along_dp_fsdp
@@ -1912,7 +1914,7 @@ class FusedAttnHelper:
         return (q_batch_shape, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups, q_head_dim)
 
     @staticmethod
-    def get_real_batch(q_cu_seqlen_aval, kv_cu_seqlen_aval):
+    def get_real_batch(q_cu_seqlen_aval, kv_cu_seqlen_aval, qkv_layout):
         """
         Get the real batch size (number of sequences) through cu_seqlen shape
         For non-packed format, the batch size is equal to the batch dimension of input shape.
@@ -1920,10 +1922,13 @@ class FusedAttnHelper:
         dimension of input shape. Thus we had to get the real batch size from length of cu_seqlen.
         """
         # For THD (packed) format, the cu_seqlen shape is not associated to input_shape
-        assert len(q_cu_seqlen_aval.shape) == 1, \
-            f"shape of cu_seqlen must be [batch,] but got {q_cu_seqlen_aval.shape}"
-        assert q_cu_seqlen_aval.shape == kv_cu_seqlen_aval.shape
-        input_batch = q_cu_seqlen_aval.shape[0] - 1
+        assert q_cu_seqlen_aval.shape[0] == kv_cu_seqlen_aval.shape[0], f'{q_cu_seqlen_aval.shape=} {kv_cu_seqlen_aval.shape=}'
+        if nvte_get_qkv_format(qkv_layout) == NVTE_QKV_Format.NVTE_THD:
+            input_batch = q_cu_seqlen_aval.shape[0]
+        else:
+            assert len(q_cu_seqlen_aval.shape) == 1, \
+                f"shape of cu_seqlen must be [batch,] but got {q_cu_seqlen_aval.shape}"
+            input_batch = q_cu_seqlen_aval.shape[0] - 1
         return input_batch
 
 
@@ -1971,8 +1976,9 @@ def generate_cu_seqlen(actual_seqlen):
     """
     Generating cumsum seqlen for a batch
     """
-    cu_seqlen = jnp.cumsum(actual_seqlen)
-    cu_seqlen = jnp.hstack((0, cu_seqlen))
+    batch_size = actual_seqlen.shape[0]
+    cu_seqlen = jnp.cumsum(actual_seqlen, axis=-1)
+    cu_seqlen = jnp.insert(cu_seqlen, 0, values=0, axis=-1)
     return cu_seqlen
 
 
@@ -2040,7 +2046,8 @@ class FusedAttnFwdPrimitive(BasePrimitive):
         # do a dummy kernel call here to get workspace buffer shapes/dtypes that XLA needs to
         # prepare for the active fused-attn backend
         input_batch = FusedAttnHelper.get_real_batch(q_seqlen_or_cu_seqlen_aval,
-                                                     kv_seqlen_or_cu_seqlen_aval)
+                                                     kv_seqlen_or_cu_seqlen_aval,
+                                                     qkv_layout)
         wkspace_info = transformer_engine_jax.get_fused_attn_fwd_workspace_sizes(
             input_batch, bias_batch, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups,
             bias_heads, head_dim, scaling_factor, dropout_probability, attn_bias_type,
@@ -2083,7 +2090,7 @@ class FusedAttnFwdPrimitive(BasePrimitive):
         _, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups, head_dim = \
             FusedAttnHelper.parse_qkv_aval(q_aval, k_aval, v_aval, qkv_layout)
 
-        input_batch = FusedAttnHelper.get_real_batch(q_cu_seqlen_aval, kv_cu_seqlen_aval)
+        input_batch = FusedAttnHelper.get_real_batch(q_cu_seqlen_aval, kv_cu_seqlen_aval, qkv_layout)
 
         if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
             bias_batch = bias_heads = 0
@@ -2109,6 +2116,42 @@ class FusedAttnFwdPrimitive(BasePrimitive):
              attn_bias_type, attn_mask_type, qkv_layout, scaling_factor, dropout_probability,
              is_training, is_ragged):
         assert FusedAttnFwdPrimitive.inner_primitive is not None
+
+        if nvte_get_qkv_format(qkv_layout) == NVTE_QKV_Format.NVTE_THD:
+            def _fix_len_take(x, condition):
+                x_shape = x.shape
+                x = x.flatten()
+                size = x.size
+                indices = jnp.nonzero(condition.flatten(), size=size, fill_value=size)[0]
+                y = jnp.take(x, indices, fill_value=-1)
+                return jnp.reshape(y, x_shape)
+
+            q_seq_offsets = _fix_len_take(q_seq_offsets, q_seq_offsets >= 0)
+            q_seq_offsets = jnp.where(q_seq_offsets < 0, q_seq_offsets.size, q_seq_offsets)
+            k_seq_offsets = _fix_len_take(k_seq_offsets, k_seq_offsets >= 0)
+            k_seq_offsets = jnp.where(k_seq_offsets < 0, k_seq_offsets.size, k_seq_offsets)
+
+            index_type = jnp.int32
+            match qkv_layout:
+                case NVTE_QKV_Layout.NVTE_T3HD:
+                    q_seq_offsets = \
+                        (reduce(operator.mul, q.shape[-3:]) * q_seq_offsets).astype(index_type)
+                    k_seq_offsets = v_seq_offsets = \
+                        (reduce(operator.mul, q.shape[-3:]) * k_seq_offsets).astype(index_type)
+                    o_seq_offsets = q_seq_offsets // 3
+                case NVTE_QKV_Layout.NVTE_THD_T2HD:
+                    o_seq_offsets = q_seq_offsets = \
+                        (reduce(operator.mul, q.shape[-2:]) * q_seq_offsets).astype(index_type)
+                    k_seq_offsets = v_seq_offsets = \
+                        (reduce(operator.mul, k.shape[-3:]) * k_seq_offsets).astype(index_type)
+                case NVTE_QKV_Layout.NVTE_THD_THD_THD:
+                    o_seq_offsets = q_seq_offsets = \
+                        (reduce(operator.mul, q.shape[-2:]) * q_seq_offsets).astype(index_type)
+                    k_seq_offsets = v_seq_offsets = \
+                        (reduce(operator.mul, k.shape[-2:]) * k_seq_offsets).astype(index_type)
+
+            q_seqlen = _fix_len_take(q_seqlen, q_seqlen > 0)
+            kv_seqlen = _fix_len_take(kv_seqlen, kv_seqlen > 0)
 
         q_cu_seqlen = generate_cu_seqlen(q_seqlen)
         kv_cu_seqlen = generate_cu_seqlen(kv_seqlen)
@@ -2244,7 +2287,8 @@ class FusedAttnBwdPrimitive(BasePrimitive):
             bias_batch = reduce(operator.mul, bias_batch_shape)
 
         input_batch = FusedAttnHelper.get_real_batch(q_seqlen_or_cu_seqlen_aval,
-                                                     kv_seqlen_or_cu_seqlen_aval)
+                                                     kv_seqlen_or_cu_seqlen_aval,
+                                                     qkv_layout)
 
         wkspace_shape, wkspace_dtype = \
             transformer_engine_jax.get_fused_attn_bwd_workspace_sizes(
@@ -2296,7 +2340,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
         _, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups, head_dim = \
             FusedAttnHelper.parse_qkv_aval(q_aval, k_aval, v_aval, qkv_layout)
 
-        input_batch = FusedAttnHelper.get_real_batch(q_cu_seqlen_aval, kv_cu_seqlen_aval)
+        input_batch = FusedAttnHelper.get_real_batch(q_cu_seqlen_aval, kv_cu_seqlen_aval, qkv_layout)
 
         if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
             bias_batch = bias_heads = 0
@@ -2322,6 +2366,41 @@ class FusedAttnBwdPrimitive(BasePrimitive):
              attn_mask_type, qkv_layout, scaling_factor, dropout_probability, is_training,
              is_ragged):
         assert FusedAttnBwdPrimitive.inner_primitive is not None
+
+        if nvte_get_qkv_format(qkv_layout) == NVTE_QKV_Format.NVTE_THD:
+            def _fix_len_take(x, condition):
+                x_shape = x.shape
+                x = x.flatten()
+                size = x.size
+                indices = jnp.nonzero(condition.flatten(), size=size, fill_value=size)[0]
+                y = jnp.take(x, indices, fill_value=-1)
+                return jnp.reshape(y, x_shape)
+
+            q_seqlen = _fix_len_take(q_seqlen, q_seqlen > 0)
+            kv_seqlen = _fix_len_take(kv_seqlen, kv_seqlen > 0)
+            q_seq_offsets = _fix_len_take(q_seq_offsets, q_seq_offsets >= 0)
+            q_seq_offsets = jnp.where(q_seq_offsets < 0, q_seq_offsets.size, q_seq_offsets)
+            k_seq_offsets = _fix_len_take(k_seq_offsets, k_seq_offsets >= 0)
+            k_seq_offsets = jnp.where(k_seq_offsets < 0, k_seq_offsets.size, k_seq_offsets)
+
+            index_type = jnp.int32
+            match qkv_layout:
+                case NVTE_QKV_Layout.NVTE_T3HD:
+                    q_seq_offsets = \
+                        (reduce(operator.mul, q.shape[-3:]) * q_seq_offsets).astype(index_type)
+                    k_seq_offsets = v_seq_offsets = \
+                        (reduce(operator.mul, q.shape[-3:]) * k_seq_offsets).astype(index_type)
+                    o_seq_offsets = q_seq_offsets // 3
+                case NVTE_QKV_Layout.NVTE_THD_T2HD:
+                    o_seq_offsets = q_seq_offsets = \
+                        (reduce(operator.mul, q.shape[-2:]) * q_seq_offsets).astype(index_type)
+                    k_seq_offsets = v_seq_offsets = \
+                        (reduce(operator.mul, k.shape[-3:]) * k_seq_offsets).astype(index_type)
+                case NVTE_QKV_Layout.NVTE_THD_THD_THD:
+                    o_seq_offsets = q_seq_offsets = \
+                        (reduce(operator.mul, q.shape[-2:]) * q_seq_offsets).astype(index_type)
+                    k_seq_offsets = v_seq_offsets = \
+                        (reduce(operator.mul, k.shape[-2:]) * k_seq_offsets).astype(index_type)
 
         q_cu_seqlen = generate_cu_seqlen(q_seqlen)
         kv_cu_seqlen = generate_cu_seqlen(kv_seqlen)
@@ -2475,41 +2554,20 @@ def fused_attn_fwd(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray],
     if (q_seq_offsets is None) != (kv_seq_offsets is None):
         raise ArgumentValidationError(
             "Both q_seq_offsets and kv_seq_offsets must be either None or have values.")
-    is_ragged = q_seq_offsets is not None
+    is_ragged = nvte_get_qkv_format(qkv_layout) == NVTE_QKV_Format.NVTE_THD
 
-    # cuDNN examples uses int32, may need to use int64 in the future
-    index_type = jnp.int32
     # For optional tensors, which custom calls doesn't support None
     _not_used = jnp.zeros(0, dtype=qkv[0].dtype)
     match qkv_layout:
         case NVTE_QKV_Layout.NVTE_BS3HD | NVTE_QKV_Layout.NVTE_T3HD:
-            assert len(qkv) == 1, f"qkv=(packed_qkv,) is accepted with {qkv_layout=}"
+            assert len(qkv) == 1, f"qkv=(packed_qkv,) is expected with {qkv_layout=} but got {qkv=}"
             qkv_for_primitive = [*qkv, _not_used, _not_used]
-            if is_ragged:
-                # Handle cuDNN's ragged_offset
-                q_seq_offsets = \
-                    (reduce(operator.mul, qkv[0].shape[-3:]) * q_seq_offsets).astype(index_type)
-                k_seq_offsets = v_seq_offsets = \
-                    (reduce(operator.mul, qkv[0].shape[-3:]) * kv_seq_offsets).astype(index_type)
-                o_seq_offsets = q_seq_offsets // 3
         case NVTE_QKV_Layout.NVTE_BSHD_BS2HD | NVTE_QKV_Layout.NVTE_THD_T2HD:
-            assert len(qkv) == 2, f"qkv=(query, packed_kv) is accepted with {qkv_layout=}"
+            assert len(qkv) == 2, f"qkv=(query, packed_kv) is expected with {qkv_layout=} but got {qkv=}"
             qkv_for_primitive = [*qkv, _not_used]
-            if is_ragged:
-                # Handle cuDNN's ragged_offset
-                o_seq_offsets = q_seq_offsets = \
-                    (reduce(operator.mul, qkv[0].shape[-2:]) * q_seq_offsets).astype(index_type)
-                k_seq_offsets = v_seq_offsets = \
-                    (reduce(operator.mul, qkv[1].shape[-3:]) * kv_seq_offsets).astype(index_type)
         case NVTE_QKV_Layout.NVTE_BSHD_BSHD_BSHD | NVTE_QKV_Layout.NVTE_THD_THD_THD:
-            assert len(qkv) == 3, f"qkv=(query, key, value) is accepted with {qkv_layout=}"
+            assert len(qkv) == 3, f"qkv=(query, key, value) is expected with {qkv_layout=} but got {qkv=}"
             qkv_for_primitive = qkv
-            if is_ragged:
-                # Handle cuDNN's ragged_offset
-                o_seq_offsets = q_seq_offsets = \
-                    (reduce(operator.mul, qkv[0].shape[-2:]) * q_seq_offsets).astype(index_type)
-                k_seq_offsets = v_seq_offsets = \
-                    (reduce(operator.mul, qkv[1].shape[-2:]) * kv_seq_offsets).astype(index_type)
 
     if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
         assert bias is None
@@ -2521,9 +2579,9 @@ def fused_attn_fwd(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray],
         q_seqlen,
         kv_seqlen,
         q_seq_offsets if is_ragged else _not_used,
-        k_seq_offsets if is_ragged else _not_used,
-        v_seq_offsets if is_ragged else _not_used,
-        o_seq_offsets if is_ragged else _not_used,
+        kv_seq_offsets if is_ragged else _not_used,
+        kv_seq_offsets if is_ragged else _not_used,
+        q_seq_offsets if is_ragged else _not_used,
         seed,
         attn_bias_type=attn_bias_type,
         attn_mask_type=attn_mask_type,
@@ -2577,27 +2635,32 @@ def fused_attn_bwd(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray],
         - The second value is the gradient with respect to `bias`, or `None` if `bias` is `None`.
     """
 
+    if (q_seq_offsets is None) != (kv_seq_offsets is None):
+        raise ArgumentValidationError(
+            "Both q_seq_offsets and kv_seq_offsets must be either None or have values.")
+    is_ragged = nvte_get_qkv_format(qkv_layout) == NVTE_QKV_Format.NVTE_THD
+
+    # For optional tensors, which custom calls doesn't support None
     _not_used = jnp.zeros(0, dtype=qkv[0].dtype)
+
     match qkv_layout:
         case NVTE_QKV_Layout.NVTE_BS3HD | NVTE_QKV_Layout.NVTE_T3HD:
             assert len(qkv) == 1, \
-                f"qkv needs to be (packed_qkv,) with {qkv_layout=} but got {qkv=}"
+                f"qkv=(packed_qkv,) is expected with {qkv_layout=} but got {qkv=}"
             qkv_for_primitive = [*qkv, _not_used, _not_used]
         case NVTE_QKV_Layout.NVTE_BSHD_BS2HD | NVTE_QKV_Layout.NVTE_THD_T2HD:
             assert len(qkv) == 2, \
-                f"qkv needs to be (query, packed_kv) is accepted with {qkv_layout=} but got {qkv=}"
+                f"qkv=(query, packed_kv) is expected with {qkv_layout=} but got {qkv=}"
             qkv_for_primitive = [*qkv, _not_used]
         case NVTE_QKV_Layout.NVTE_BSHD_BSHD_BSHD | NVTE_QKV_Layout.NVTE_THD_THD_THD:
             assert len(qkv) == 3, \
-                f"qkv needs to be (query, key, value) is accepted with {qkv_layout=} but got {qkv=}"
+                f"qkv=(query, key, value) is expected with {qkv_layout=} but got {qkv=}"
             qkv_for_primitive = qkv
 
     if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
         assert bias is None
         bias = jnp.zeros(0, dtype=qkv[0].dtype)
 
-    dummy_seq_offset = jnp.zeros(0, jnp.int32)
-    is_ragged = False
     *qkv_grads, bias_grad = FusedAttnBwdPrimitive.outer_primitive.bind(
         *qkv_for_primitive,
         bias,
@@ -2607,10 +2670,10 @@ def fused_attn_bwd(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray],
         doutput,
         q_seqlen,
         kv_seqlen,
-        dummy_seq_offset,
-        dummy_seq_offset,
-        dummy_seq_offset,
-        dummy_seq_offset,
+        q_seq_offsets if is_ragged else _not_used,
+        kv_seq_offsets if is_ragged else _not_used,
+        kv_seq_offsets if is_ragged else _not_used,
+        q_seq_offsets if is_ragged else _not_used,
         attn_bias_type=attn_bias_type,
         attn_mask_type=attn_mask_type,
         qkv_layout=qkv_layout,
