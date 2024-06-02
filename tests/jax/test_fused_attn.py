@@ -306,7 +306,7 @@ class FusedAttnRunner:
             pad_len = int(max_seqlen * pad_ratio)
             valid_len = max_seqlen - pad_len
             tokens = jnp.concatenate([jnp.ones((bs, valid_len)), jnp.zeros((bs, pad_len))], axis=-1)
-            return valid_len, tokens
+            return tokens, jnp.logical_not(tokens)
 
         def generate_random_segment_ids(batch_size, sequence_length, max_segment_size):
             # [1, 1, 1, 2, 2, 3, 3, 3, 3, 0, 0], 0 means pad
@@ -338,8 +338,8 @@ class FusedAttnRunner:
         #     self.token_kv, self.segment_pad_kv = generate_random_segment_ids(
         #         self.batch_size, self.max_seqlen_kv, self.max_seqlen_kv // 4)
         # else:
-        self.valid_len_q, self.token_q = gen_valid(self.batch_size, self.max_seqlen_q, pad_ratio)
-        self.valid_len_kv, self.token_kv = gen_valid(self.batch_size, self.max_seqlen_kv, pad_ratio)
+        self.token_q, self.pad_q = gen_valid(self.batch_size, self.max_seqlen_q, pad_ratio)
+        self.token_kv, self.pad_kv = gen_valid(self.batch_size, self.max_seqlen_kv, pad_ratio)
         self.segment_pad_q = self.segment_pad_kv = None
 
         self.mask = make_mask(self.token_q, self.token_kv, self.segment_pad_q, self.segment_pad_kv, self.attn_mask_type)
@@ -382,8 +382,10 @@ class FusedAttnRunner:
         if self.is_training and self.dropout_prob > 0.:
             return
 
-        primitive_valid, primitive_invalid = jnp.split(primitive_out, (self.valid_len_q,), axis=1)
-        reference_valid, _ = jnp.split(reference_out, (self.valid_len_q,), axis=1)
+        primitive_valid = jnp.where(self.pad_q[..., jnp.newaxis, jnp.newaxis], 0, primitive_out)
+        primitive_invalid = jnp.where(self.pad_q[..., jnp.newaxis, jnp.newaxis], primitive_out, 0)
+        reference_valid = jnp.where(self.pad_q[..., jnp.newaxis, jnp.newaxis], 0, reference_out)
+        reference_invalid = jnp.where(self.pad_q[..., jnp.newaxis, jnp.newaxis], reference_out, 0)
 
         # TODO(rewang): check
         if get_qkv_format(self.qkv_layout) != QKVFormat.THD:
@@ -402,11 +404,11 @@ class FusedAttnRunner:
 
         def grad_func(func, *args, **kwargs):
             # Gradient is small, use a gradient multiplier to amplify the gradient
-            gradient_multiplier = self.valid_len_q * self.num_heads_q
+            gradient_multiplier = self.max_seqlen_q * self.num_heads_q
             if is_causal_mask(self.attn_mask_type):
                 gradient_multiplier /= 10
             # Keep only valid result for the gradient
-            ret_valid, _ = jnp.split(func(*args, **kwargs), (self.valid_len_q,), axis=1)
+            ret_valid = jnp.where(self.pad_q[..., jnp.newaxis, jnp.newaxis], 0, func(*args, **kwargs))
             return (jnp.mean(ret_valid, dtype=jnp.float32) * gradient_multiplier).astype(self.dtype)
 
         args = [self.q, self.k, self.v, self.bias, self.mask, self.dropout_rng]
@@ -447,9 +449,11 @@ class FusedAttnRunner:
                         reference_out.astype(jnp.float32),
                         dtype=self.dtype)
 
-        def check_dqkv(primitive, reference, valid_len):
-            primitive_valid, primitive_invalid = jnp.split(primitive, (valid_len,), axis=1)
-            reference_valid, reference_invalid = jnp.split(reference, (valid_len,), axis=1)
+        def check_dqkv(primitive, reference, pad):
+            primitive_valid = jnp.where(pad[..., jnp.newaxis, jnp.newaxis], 0, primitive)
+            primitive_invalid = jnp.where(pad[..., jnp.newaxis, jnp.newaxis], primitive, 0)
+            reference_valid = jnp.where(pad[..., jnp.newaxis, jnp.newaxis], 0, reference)
+            reference_invalid = jnp.where(pad[..., jnp.newaxis, jnp.newaxis], reference, 0)
 
             # TODO(rewang): check
             if get_qkv_format(self.qkv_layout) != QKVFormat.THD:
@@ -462,27 +466,30 @@ class FusedAttnRunner:
         primitive_dq, primitive_dk, primitive_dv = map(jnp.float32, primitive_dgrad[:3])
         reference_dq, reference_dk, reference_dv = map(jnp.float32, reference_dgrad[:3])
 
-        check_dqkv(primitive_dq, reference_dq, self.valid_len_q)
-        check_dqkv(primitive_dk, reference_dk, self.valid_len_kv)
-        check_dqkv(primitive_dv, reference_dv, self.valid_len_kv)
+        check_dqkv(primitive_dq, reference_dq, self.pad_q)
+        check_dqkv(primitive_dk, reference_dk, self.pad_kv)
+        check_dqkv(primitive_dv, reference_dv, self.pad_kv)
 
         if self.attn_bias_type != AttnBiasType.NO_BIAS and self.bias_shape == BiasShape.BIAS_1HSS:
             primitive_dbias = jnp.float32(primitive_dgrad[3])
             reference_dbias = jnp.float32(reference_dgrad[3])
 
-            assert_allclose(primitive_dbias[..., self.valid_len_q:, self.valid_len_kv:],
-                            jnp.zeros_like(primitive_dbias[..., self.valid_len_q:,
-                                                           self.valid_len_kv:]),
+            # Assume all batch has the same actual_seqlen, probably needs to extend the tests
+            bias_mask = self.mask[0, 0]
+
+            # Assert all masked dbias are 0s
+            assert_allclose(jnp.where(bias_mask, primitive_dbias, 0),
+                            jnp.zeros_like(primitive_dbias),
                             dtype=self.dtype)
 
             # dbias padded part
-            assert_allclose(primitive_dbias[..., self.valid_len_q:, self.valid_len_kv:],
-                            reference_dbias[..., self.valid_len_q:, self.valid_len_kv:],
+            assert_allclose(jnp.where(bias_mask, primitive_dbias, 0),
+                            jnp.where(bias_mask, reference_dbias, 0),
                             dtype=self.dtype)
 
             # dbias valid part
-            assert_allclose(primitive_dbias[..., :self.valid_len_q, :self.valid_len_kv],
-                            reference_dbias[..., :self.valid_len_q, :self.valid_len_kv],
+            assert_allclose(jnp.where(bias_mask, 0, primitive_dbias),
+                            jnp.where(bias_mask, 0, reference_dbias),
                             dtype=self.dtype)
 
 
