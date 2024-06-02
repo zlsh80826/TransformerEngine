@@ -9,6 +9,7 @@ from math import sqrt
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from flax.linen import combine_masks
@@ -88,7 +89,36 @@ def is_causal_mask(mask: AttnMaskType):
     return mask in [AttnMaskType.CAUSAL_MASK, AttnMaskType.PADDING_CAUSAL_MASK]
 
 
-def make_decoder_mask(q_tokens: ArrayLike, kv_tokens: ArrayLike) -> Array:
+# def make_segment_mask(
+#     segment_ids: JTensor,
+#     source_segment_ids: JTensor | None = None,
+# ) -> JTensor:
+#   """Computes (non-causal) segment mask.
+
+#   Args:
+#     segment_ids: a JTensor of shape [B, T], the segment that each token belongs
+#       to.
+#     source_segment_ids: a JTensor of shape [B, S], the segment that each source
+#       token belongs to (optional).
+#     dtype: data type of the input.
+
+#   Returns:
+#     A JTensor of shape [B, 1, T, S].
+#   """
+#   # [B, T, 1]
+#   segment_ids_1 = jnp.expand_dims(segment_ids, axis=-1)
+#   # [B, 1, S]
+#   if source_segment_ids is not None:
+#     segment_ids_2 = jnp.expand_dims(source_segment_ids, axis=1)
+#   else:
+#     segment_ids_2 = jnp.expand_dims(segment_ids, axis=1)
+#   # [B, T, S].
+#   mask = jnp.not_equal(segment_ids_1, segment_ids_2)
+#   mask = jnp.expand_dims(mask, 1)
+#   return mask
+
+
+def make_causal_mask(q_tokens: ArrayLike, kv_tokens: ArrayLike) -> Array:
     """
     Create inverse padded causal mask where `True` means allowing the corresponding
     position to participate in attention and `False` means masking out that position.
@@ -96,20 +126,21 @@ def make_decoder_mask(q_tokens: ArrayLike, kv_tokens: ArrayLike) -> Array:
     q_idxs = jnp.broadcast_to(jnp.arange(q_tokens.shape[-1], dtype=jnp.int32), q_tokens.shape)
     kv_idxs = jnp.broadcast_to(jnp.arange(kv_tokens.shape[-1], dtype=jnp.int32), kv_tokens.shape)
     inv_causal_mask = make_attention_mask(q_idxs, kv_idxs, jnp.greater_equal)
-    inv_padding_mask = make_attention_mask(q_tokens > 0, kv_tokens > 0)
-    return combine_masks(inv_causal_mask, inv_padding_mask)
+    return inv_causal_mask
 
 
-def make_mask(q_token: ArrayLike, kv_token: ArrayLike, attn_mask_type: AttnMaskType) -> Array:
+def make_mask(q_token: ArrayLike, kv_token: ArrayLike,
+              segment_pad_q: ArrayLike, segment_pad_kv: ArrayLike,
+              attn_mask_type: AttnMaskType) -> Array:
     """
     Create attention mask based on mask type. A `True` value in the mask means
     masking out the corresponding position and a `False` value means allowing
     that position to participate in attention.
     """
+    inv_mask = make_attention_mask(q_token, kv_token, jnp.equal)
     if is_causal_mask(attn_mask_type):
-        inv_mask = make_decoder_mask(q_token, kv_token)
-    else:
-        inv_mask = make_attention_mask(q_token > 0, kv_token > 0)
+        inv_causal_mask = make_causal_mask(q_token, kv_token)
+        inv_mask = combine_masks(inv_causal_mask, inv_mask)
     mask = jnp.logical_not(inv_mask)
     return mask
 
@@ -277,10 +308,42 @@ class FusedAttnRunner:
             tokens = jnp.concatenate([jnp.ones((bs, valid_len)), jnp.zeros((bs, pad_len))], axis=-1)
             return valid_len, tokens
 
+        def generate_random_segment_ids(batch_size, sequence_length, max_segment_size):
+            # [1, 1, 1, 2, 2, 3, 3, 3, 3, 0, 0], 0 means pad
+            segment_ids = np.zeros((batch_size, sequence_length), dtype=int)
+            # [0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1], 1 means pad
+            segment_pad = np.zeros((batch_size, sequence_length), dtype=int)
+
+            for i in range(batch_size):
+                current_pos = 0
+                segment_id = 1
+
+                while current_pos < sequence_length:
+                    segment_size = np.random.randint(1, max_segment_size + 1)
+                    num_valid = np.random.randint(1, segment_size + 1)
+                    if current_pos + segment_size > sequence_length:
+                        break
+                    segment_end = current_pos + segment_size
+                    segment_ids[i, current_pos:segment_end] = segment_id
+                    segment_pad[i, current_pos + num_valid:segment_end] = 1
+
+                    current_pos = segment_end
+                    segment_id += 1
+                segment_pad[i, current_pos:sequence_length] = 1
+            return segment_ids, segment_pad
+
+        # if get_qkv_format(self.qkv_layout) == QKVFormat.THD:
+        #     self.token_q, self.segment_pad_q = generate_random_segment_ids(
+        #         self.batch_size, self.max_seqlen_q, self.max_seqlen_q // 4)
+        #     self.token_kv, self.segment_pad_kv = generate_random_segment_ids(
+        #         self.batch_size, self.max_seqlen_kv, self.max_seqlen_kv // 4)
+        # else:
         self.valid_len_q, self.token_q = gen_valid(self.batch_size, self.max_seqlen_q, pad_ratio)
         self.valid_len_kv, self.token_kv = gen_valid(self.batch_size, self.max_seqlen_kv, pad_ratio)
+        self.segment_pad_q = self.segment_pad_kv = None
 
-        self.mask = make_mask(self.token_q, self.token_kv, self.attn_mask_type)
+        self.mask = make_mask(self.token_q, self.token_kv, self.segment_pad_q, self.segment_pad_kv, self.attn_mask_type)
+
         if get_qkv_format(self.qkv_layout) == QKVFormat.THD:
             self.seqlens_q, self.offsets_q = get_seqlens_and_offsets(self.token_q)
             self.seqlens_kv, self.offsets_kv = get_seqlens_and_offsets(self.token_kv)
