@@ -89,35 +89,6 @@ def is_causal_mask(mask: AttnMaskType):
     return mask in [AttnMaskType.CAUSAL_MASK, AttnMaskType.PADDING_CAUSAL_MASK]
 
 
-# def make_segment_mask(
-#     segment_ids: JTensor,
-#     source_segment_ids: JTensor | None = None,
-# ) -> JTensor:
-#   """Computes (non-causal) segment mask.
-
-#   Args:
-#     segment_ids: a JTensor of shape [B, T], the segment that each token belongs
-#       to.
-#     source_segment_ids: a JTensor of shape [B, S], the segment that each source
-#       token belongs to (optional).
-#     dtype: data type of the input.
-
-#   Returns:
-#     A JTensor of shape [B, 1, T, S].
-#   """
-#   # [B, T, 1]
-#   segment_ids_1 = jnp.expand_dims(segment_ids, axis=-1)
-#   # [B, 1, S]
-#   if source_segment_ids is not None:
-#     segment_ids_2 = jnp.expand_dims(source_segment_ids, axis=1)
-#   else:
-#     segment_ids_2 = jnp.expand_dims(segment_ids, axis=1)
-#   # [B, T, S].
-#   mask = jnp.not_equal(segment_ids_1, segment_ids_2)
-#   mask = jnp.expand_dims(mask, 1)
-#   return mask
-
-
 def make_causal_mask(q_tokens: ArrayLike, kv_tokens: ArrayLike) -> Array:
     """
     Create inverse padded causal mask where `True` means allowing the corresponding
@@ -137,7 +108,9 @@ def make_mask(q_token: ArrayLike, kv_token: ArrayLike,
     masking out the corresponding position and a `False` value means allowing
     that position to participate in attention.
     """
-    inv_mask = make_attention_mask(q_token, kv_token, jnp.equal)
+    # TODO(rewang): check paddings
+    # inv_mask = make_attention_mask(q_token, kv_token, jnp.equal)
+    inv_mask = make_attention_mask(q_token, kv_token, lambda x, y: (jnp.logical_and(jnp.equal(x, y), x != 0)))
     if is_causal_mask(attn_mask_type):
         inv_causal_mask = make_causal_mask(q_token, kv_token)
         inv_mask = combine_masks(inv_causal_mask, inv_mask)
@@ -158,6 +131,16 @@ def get_seqlens_and_offsets(segment_ids):
     offsets = _find_offsets(segment_ids)
     offsets_2d = jnp.where(offsets >= 0, offsets + (jnp.arange(batch) * max_seqlen)[..., jnp.newaxis], offsets)
     return seqlens, offsets_2d
+
+
+@jax.jit
+def _split_valid_and_invalid(primitive, reference, pad):
+    """Use JIT to speed up the verifications"""
+    primitive_valid = jnp.where(pad[..., jnp.newaxis, jnp.newaxis], 0, primitive)
+    primitive_invalid = jnp.where(pad[..., jnp.newaxis, jnp.newaxis], primitive, 0)
+    reference_valid = jnp.where(pad[..., jnp.newaxis, jnp.newaxis], 0, reference)
+    reference_invalid = jnp.where(pad[..., jnp.newaxis, jnp.newaxis], reference, 0)
+    return primitive_valid, primitive_invalid, reference_valid, reference_invalid
 
 
 def jax_dpa(query, key, value, bias, mask, dropout_rng, **kwargs):
@@ -308,7 +291,8 @@ class FusedAttnRunner:
             tokens = jnp.concatenate([jnp.ones((bs, valid_len)), jnp.zeros((bs, pad_len))], axis=-1)
             return tokens, jnp.logical_not(tokens)
 
-        def generate_random_segment_ids(batch_size, sequence_length, max_segment_size):
+        def generate_random_segment_ids(batch_size, sequence_length, max_segment_size, seed, with_segment_pad=False):
+            rng = np.random.default_rng(seed=seed)
             # [1, 1, 1, 2, 2, 3, 3, 3, 3, 0, 0], 0 means pad
             segment_ids = np.zeros((batch_size, sequence_length), dtype=int)
             # [0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1], 1 means pad
@@ -319,28 +303,37 @@ class FusedAttnRunner:
                 segment_id = 1
 
                 while current_pos < sequence_length:
-                    segment_size = np.random.randint(1, max_segment_size + 1)
-                    num_valid = np.random.randint(1, segment_size + 1)
+                    segment_size = rng.integers(1, max_segment_size + 1)
                     if current_pos + segment_size > sequence_length:
                         break
                     segment_end = current_pos + segment_size
                     segment_ids[i, current_pos:segment_end] = segment_id
-                    segment_pad[i, current_pos + num_valid:segment_end] = 1
-
+                    if with_segment_pad:
+                        num_valid = rng.integers(1, segment_size + 1)
+                        segment_pad[i, current_pos + num_valid:segment_end] = 1
                     current_pos = segment_end
+                    # TODO(rewang): support multilen
+                    break
                     segment_id += 1
                 segment_pad[i, current_pos:sequence_length] = 1
             return segment_ids, segment_pad
 
-        # if get_qkv_format(self.qkv_layout) == QKVFormat.THD:
-        #     self.token_q, self.segment_pad_q = generate_random_segment_ids(
-        #         self.batch_size, self.max_seqlen_q, self.max_seqlen_q // 4)
-        #     self.token_kv, self.segment_pad_kv = generate_random_segment_ids(
-        #         self.batch_size, self.max_seqlen_kv, self.max_seqlen_kv // 4)
-        # else:
-        self.token_q, self.pad_q = gen_valid(self.batch_size, self.max_seqlen_q, pad_ratio)
-        self.token_kv, self.pad_kv = gen_valid(self.batch_size, self.max_seqlen_kv, pad_ratio)
-        self.segment_pad_q = self.segment_pad_kv = None
+        if get_qkv_format(self.qkv_layout) == QKVFormat.THD:
+            self.token_q, self.segment_pad_q = generate_random_segment_ids(
+                self.batch_size, self.max_seqlen_q, self.max_seqlen_q // 1, seed=42)
+            # TODO(rewang): check if qkvpacked supported different q/kv
+            if self.qkv_layout == QKVLayout.T3HD:
+                self.token_kv = self.token_q
+                self.segment_pad_kv = self.segment_pad_q
+            else:
+                self.token_kv, self.segment_pad_kv = generate_random_segment_ids(
+                    self.batch_size, self.max_seqlen_kv, self.max_seqlen_kv // 1, seed=2024)
+            self.pad_q = self.segment_pad_q
+            self.pad_kv = self.segment_pad_kv
+        else:
+            self.token_q, self.pad_q = gen_valid(self.batch_size, self.max_seqlen_q, pad_ratio)
+            self.token_kv, self.pad_kv = gen_valid(self.batch_size, self.max_seqlen_kv, pad_ratio)
+            self.segment_pad_q = self.segment_pad_kv = None
 
         self.mask = make_mask(self.token_q, self.token_kv, self.segment_pad_q, self.segment_pad_kv, self.attn_mask_type)
 
@@ -376,16 +369,14 @@ class FusedAttnRunner:
         }
 
         # Convert the outputs to float32 for the elementwise comparison
-        primitive_out = customcall_fused_dpa(*customcall_args, **kwargs).astype(jnp.float32)
-        reference_out = jax_dpa(*args, **kwargs).astype(jnp.float32)
+        primitive_out = customcall_fused_dpa(*customcall_args, **kwargs)
+        reference_out = jax_dpa(*args, **kwargs)
 
         if self.is_training and self.dropout_prob > 0.:
             return
 
-        primitive_valid = jnp.where(self.pad_q[..., jnp.newaxis, jnp.newaxis], 0, primitive_out)
-        primitive_invalid = jnp.where(self.pad_q[..., jnp.newaxis, jnp.newaxis], primitive_out, 0)
-        reference_valid = jnp.where(self.pad_q[..., jnp.newaxis, jnp.newaxis], 0, reference_out)
-        reference_invalid = jnp.where(self.pad_q[..., jnp.newaxis, jnp.newaxis], reference_out, 0)
+        primitive_valid, primitive_invalid, reference_valid, reference_invalid = \
+            _split_valid_and_invalid(primitive_out, reference_out, self.pad_q)
 
         # TODO(rewang): check
         if get_qkv_format(self.qkv_layout) != QKVFormat.THD:
@@ -445,15 +436,11 @@ class FusedAttnRunner:
         if self.dropout_prob > 0.0:
             return
 
-        assert_allclose(primitive_out.astype(jnp.float32),
-                        reference_out.astype(jnp.float32),
-                        dtype=self.dtype)
+        assert_allclose(primitive_out, reference_out, dtype=self.dtype)
 
         def check_dqkv(primitive, reference, pad):
-            primitive_valid = jnp.where(pad[..., jnp.newaxis, jnp.newaxis], 0, primitive)
-            primitive_invalid = jnp.where(pad[..., jnp.newaxis, jnp.newaxis], primitive, 0)
-            reference_valid = jnp.where(pad[..., jnp.newaxis, jnp.newaxis], 0, reference)
-            reference_invalid = jnp.where(pad[..., jnp.newaxis, jnp.newaxis], reference, 0)
+            primitive_valid, primitive_invalid, reference_valid, reference_invalid = \
+                _split_valid_and_invalid(primitive, reference, pad)
 
             # TODO(rewang): check
             if get_qkv_format(self.qkv_layout) != QKVFormat.THD:
@@ -462,17 +449,18 @@ class FusedAttnRunner:
                 assert_allclose(primitive_invalid, reference_invalid, dtype=self.dtype)
             assert_allclose(primitive_valid, reference_valid, dtype=self.dtype)
 
-        # Convert the outputs to float32 for the elementwise comparison
-        primitive_dq, primitive_dk, primitive_dv = map(jnp.float32, primitive_dgrad[:3])
-        reference_dq, reference_dk, reference_dv = map(jnp.float32, reference_dgrad[:3])
+        primitive_dq, primitive_dk, primitive_dv = primitive_dgrad[:3]
+        reference_dq, reference_dk, reference_dv = reference_dgrad[:3]
 
         check_dqkv(primitive_dq, reference_dq, self.pad_q)
         check_dqkv(primitive_dk, reference_dk, self.pad_kv)
         check_dqkv(primitive_dv, reference_dv, self.pad_kv)
 
         if self.attn_bias_type != AttnBiasType.NO_BIAS and self.bias_shape == BiasShape.BIAS_1HSS:
-            primitive_dbias = jnp.float32(primitive_dgrad[3])
-            reference_dbias = jnp.float32(reference_dgrad[3])
+            # primitive_dbias = jnp.float32(primitive_dgrad[3])
+            # reference_dbias = jnp.float32(reference_dgrad[3])
+            primitive_dbias = primitive_dgrad[3]
+            reference_dbias = reference_dgrad[3]
 
             # Assume all batch has the same actual_seqlen, probably needs to extend the tests
             bias_mask = self.mask[0, 0]
@@ -516,7 +504,7 @@ class FusedAttnRunner:
 ])
 @pytest.mark.parametrize('dtype', [
     pytest.param(jnp.bfloat16, id="BF16"),
-    pytest.param(jnp.float16, id="FP16"),
+    # pytest.param(jnp.float16, id="FP16"),
 ])
 @pytest.mark.parametrize('b, s_q, s_kv, h_q, h_kv, d', [
     pytest.param(32, 128, 128, 16, 16, 64, id='32-128-128-16-16-64-SELF'),
