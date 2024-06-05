@@ -5,6 +5,7 @@
  ************************************************************************/
 #include <cuda_runtime_api.h>
 #include <cassert>
+#include <iostream>
 
 #include "common/util/cuda_runtime.h"
 #include "utils.h"
@@ -42,6 +43,30 @@ void PopulateRngStateAsync(void *rng_state_dst, const void *const seed, size_t q
     populate_rng_state_kernel<<<1, 1, 0, stream>>>(reinterpret_cast<int64_t *>(rng_state_dst),
                                                    reinterpret_cast<const int64_t *>(seed), offset);
     NVTE_CHECK_CUDA(cudaGetLastError());
+}
+
+__global__ void get_valid_batch_kernel(int32_t* cu_seqlen, size_t len, int32_t* out) {
+    int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    if (tid >= len)
+        return;
+
+    if (cu_seqlen[tid] > 0) {
+        atomicAdd(out, 1);
+    }
+}
+
+int32_t GetValidBatch(void* cu_seqlen, size_t len, cudaStream_t stream) {
+    int32_t* dout;
+    int32_t hout{};
+    cudaMallocAsync(&dout, sizeof(int32_t), stream);
+    cudaMemsetAsync(dout, 0, sizeof(int32_t), stream);
+    constexpr int threads = 128;
+    const int blocks = (len - 1) / threads + 1;
+    get_valid_batch_kernel<<<blocks, threads, 0, stream>>>(static_cast<int32_t*>(cu_seqlen), len, dout);
+    cudaMemcpyAsync(&hout, dout, sizeof(int32_t), cudaMemcpyDeviceToHost, stream);
+    cudaFreeAsync(dout, stream);
+    cudaStreamSynchronize(stream);
+    return hout;
 }
 
 }  // namespace jax

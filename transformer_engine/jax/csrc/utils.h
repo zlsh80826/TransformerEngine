@@ -28,6 +28,8 @@ void PopulateRngStateAsync(void *rng_state_dst, const void *const seed, size_t q
                            size_t kv_max_seqlen, NVTE_Fused_Attn_Backend backend,
                            cudaStream_t stream);
 
+int32_t GetValidBatch(void* cu_seqlen, size_t len, cudaStream_t stream);
+
 class cudaDevicePropertiesManager {
  public:
     static cudaDevicePropertiesManager &Instance() {

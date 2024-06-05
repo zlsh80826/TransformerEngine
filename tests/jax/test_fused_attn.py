@@ -123,6 +123,7 @@ def get_seqlens_and_offsets(segment_ids):
     bincount_vmap = jax.vmap(partial(jnp.bincount, length=max_seqlen))
     seqlens_with_zero = bincount_vmap(segment_ids.astype(jnp.int32))
     seqlens = seqlens_with_zero[..., 1:]
+    seqlens = jnp.insert(seqlens, -1, values=0, axis=-1)
     def _find_offsets(x):
         same_as_previous = jnp.logical_and(x[..., 1:] != x[..., :-1], x[..., 1:] != 0)
         first_column = jnp.ones((x.shape[0], 1), dtype=bool)
@@ -216,7 +217,8 @@ class FusedAttnRunner:
         if (get_qkv_format(self.qkv_layout) == QKVFormat.THD and not
             self.attn_mask_type in [AttnMaskType.PADDING_MASK, AttnMaskType.PADDING_CAUSAL_MASK]):
             pytest.skip("THD format requires padding masks.")
-        if self.qkv_layout == QKVLayout.BS3HD or self.qkv_layout == QKVLayout.T3HD:
+        # TODO(rewang): check THD
+        if self.qkv_layout == QKVLayout.BS3HD or get_qkv_format(self.qkv_layout) == QKVFormat.THD:
             if self.num_heads_q != self.num_heads_kv:
                 pytest.skip("QKVPACKED layout requires num_heads_q and num_heads_kv to be equal.")
             if self.max_seqlen_q != self.max_seqlen_kv:
@@ -298,11 +300,13 @@ class FusedAttnRunner:
             # [0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1], 1 means pad
             segment_pad = np.zeros((batch_size, sequence_length), dtype=int)
 
+            # Not include paddings
+            max_segment_size = sequence_length // num_segments
             for i in range(batch_size):
                 current_pos = 0
                 segment_id = 1
 
-                while current_pos < sequence_length:
+                for _ in range(num_segments):
                     segment_size = rng.integers(1, max_segment_size + 1)
                     if current_pos + segment_size > sequence_length:
                         break
@@ -312,22 +316,22 @@ class FusedAttnRunner:
                         num_valid = rng.integers(1, segment_size + 1)
                         segment_pad[i, current_pos + num_valid:segment_end] = 1
                     current_pos = segment_end
-                    # TODO(rewang): support multilen
-                    break
                     segment_id += 1
                 segment_pad[i, current_pos:sequence_length] = 1
             return segment_ids, segment_pad
 
         if get_qkv_format(self.qkv_layout) == QKVFormat.THD:
+            num_segments = 5
             self.token_q, self.segment_pad_q = generate_random_segment_ids(
-                self.batch_size, self.max_seqlen_q, self.max_seqlen_q // 1, seed=42)
+                self.batch_size, self.max_seqlen_q, num_segments, seed=42)
             # TODO(rewang): check if qkvpacked supported different q/kv
-            if self.qkv_layout == QKVLayout.T3HD:
+            # TODO(rewang): Causal with different q/kv segment_id fails
+            if self.qkv_layout == QKVLayout.T3HD or is_causal_mask(self.attn_mask_type):
                 self.token_kv = self.token_q
                 self.segment_pad_kv = self.segment_pad_q
             else:
                 self.token_kv, self.segment_pad_kv = generate_random_segment_ids(
-                    self.batch_size, self.max_seqlen_kv, self.max_seqlen_kv // 1, seed=2024)
+                    self.batch_size, self.max_seqlen_kv, num_segments, seed=2024)
             self.pad_q = self.segment_pad_q
             self.pad_kv = self.segment_pad_kv
         else:

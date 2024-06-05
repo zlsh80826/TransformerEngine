@@ -1976,8 +1976,8 @@ def generate_cu_seqlen(actual_seqlen):
     """
     Generating cumsum seqlen for a batch
     """
-    batch_size = actual_seqlen.shape[0]
     cu_seqlen = jnp.cumsum(actual_seqlen, axis=-1)
+    cu_seqlen = jnp.where(actual_seqlen < 0, -1, cu_seqlen)
     cu_seqlen = jnp.insert(cu_seqlen, 0, values=0, axis=-1)
     return cu_seqlen
 
@@ -2020,10 +2020,10 @@ class FusedAttnFwdPrimitive(BasePrimitive):
                                   kv_max_seqlen, head_dim).get_fused_attn_backend()
 
         if backend == NVTE_Fused_Attn_Backend.NVTE_F16_max512_seqlen:
-            softmax_shape = (*batch_shape, attn_heads, q_max_seqlen, kv_max_seqlen)
+            softmax_shape = (*batch_shape, q_max_seqlen, attn_heads, q_max_seqlen, kv_max_seqlen)
             softmax_dtype = q_dtype
         elif backend == NVTE_Fused_Attn_Backend.NVTE_F16_arbitrary_seqlen:
-            softmax_shape = (*batch_shape, attn_heads, q_max_seqlen, 1)
+            softmax_shape = (*batch_shape, q_max_seqlen, attn_heads, q_max_seqlen, 1)
             softmax_dtype = dtypes.canonicalize_dtype(jnp.float32)
         else:
             raise ValueError(f'Unsupported {backend=}')
@@ -2045,9 +2045,10 @@ class FusedAttnFwdPrimitive(BasePrimitive):
 
         # do a dummy kernel call here to get workspace buffer shapes/dtypes that XLA needs to
         # prepare for the active fused-attn backend
-        input_batch = FusedAttnHelper.get_real_batch(q_seqlen_or_cu_seqlen_aval,
-                                                     kv_seqlen_or_cu_seqlen_aval,
-                                                     qkv_layout)
+        # input_batch = FusedAttnHelper.get_real_batch(q_seqlen_or_cu_seqlen_aval,
+        #                                              kv_seqlen_or_cu_seqlen_aval,
+        #                                              qkv_layout)
+        input_batch = reduce(operator.mul, batch_shape)
         wkspace_info = transformer_engine_jax.get_fused_attn_fwd_workspace_sizes(
             input_batch, bias_batch, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups,
             bias_heads, head_dim, scaling_factor, dropout_probability, attn_bias_type,
@@ -2087,10 +2088,11 @@ class FusedAttnFwdPrimitive(BasePrimitive):
 
         q_aval, k_aval, v_aval, bias_aval, q_cu_seqlen_aval, kv_cu_seqlen_aval, *_ = ctx.avals_in
 
-        _, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups, head_dim = \
+        batch_shape, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups, head_dim = \
             FusedAttnHelper.parse_qkv_aval(q_aval, k_aval, v_aval, qkv_layout)
 
-        input_batch = FusedAttnHelper.get_real_batch(q_cu_seqlen_aval, kv_cu_seqlen_aval, qkv_layout)
+        # input_batch = FusedAttnHelper.get_real_batch(q_cu_seqlen_aval, kv_cu_seqlen_aval, qkv_layout)
+        input_batch = reduce(operator.mul, batch_shape)
 
         if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
             bias_batch = bias_heads = 0
@@ -2153,8 +2155,8 @@ class FusedAttnFwdPrimitive(BasePrimitive):
             q_seqlen = _fix_len_take(q_seqlen, q_seqlen > 0)
             kv_seqlen = _fix_len_take(kv_seqlen, kv_seqlen > 0)
 
-        q_cu_seqlen = generate_cu_seqlen(q_seqlen)
-        kv_cu_seqlen = generate_cu_seqlen(kv_seqlen)
+        q_cu_seqlen = generate_cu_seqlen(q_seqlen.flatten())
+        kv_cu_seqlen = generate_cu_seqlen(kv_seqlen.flatten())
 
         output, softmax_aux, rng_state, _ = FusedAttnFwdPrimitive.inner_primitive.bind(
             q,
@@ -2277,7 +2279,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
         assert q_dtype == k_dtype == v_dtype == bias_dtype == doutput_dtype
         assert q_seqlen_or_cu_seqlen_aval.dtype == kv_seqlen_or_cu_seqlen_aval.dtype
 
-        _, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups, head_dim = \
+        batch_shape, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups, head_dim = \
             FusedAttnHelper.parse_qkv_aval(q_aval, k_aval, v_aval, qkv_layout)
 
         if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
@@ -2286,10 +2288,10 @@ class FusedAttnBwdPrimitive(BasePrimitive):
             *bias_batch_shape, bias_heads, _, _ = bias_aval.shape
             bias_batch = reduce(operator.mul, bias_batch_shape)
 
-        input_batch = FusedAttnHelper.get_real_batch(q_seqlen_or_cu_seqlen_aval,
-                                                     kv_seqlen_or_cu_seqlen_aval,
-                                                     qkv_layout)
-
+        # input_batch = FusedAttnHelper.get_real_batch(q_seqlen_or_cu_seqlen_aval,
+        #                                              kv_seqlen_or_cu_seqlen_aval,
+        #                                              qkv_layout)
+        input_batch = reduce(operator.mul, batch_shape)
         wkspace_shape, wkspace_dtype = \
             transformer_engine_jax.get_fused_attn_bwd_workspace_sizes(
                 input_batch, bias_batch, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups,
@@ -2337,10 +2339,11 @@ class FusedAttnBwdPrimitive(BasePrimitive):
         q_aval, k_aval, v_aval, bias_aval, _, _, _, _, \
         q_cu_seqlen_aval, kv_cu_seqlen_aval, *_ = ctx.avals_in
 
-        _, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups, head_dim = \
+        batch_shape, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups, head_dim = \
             FusedAttnHelper.parse_qkv_aval(q_aval, k_aval, v_aval, qkv_layout)
 
-        input_batch = FusedAttnHelper.get_real_batch(q_cu_seqlen_aval, kv_cu_seqlen_aval, qkv_layout)
+        # input_batch = FusedAttnHelper.get_real_batch(q_cu_seqlen_aval, kv_cu_seqlen_aval, qkv_layout)
+        input_batch = reduce(operator.mul, batch_shape)
 
         if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
             bias_batch = bias_heads = 0
@@ -2402,8 +2405,8 @@ class FusedAttnBwdPrimitive(BasePrimitive):
                     k_seq_offsets = v_seq_offsets = \
                         (reduce(operator.mul, k.shape[-2:]) * k_seq_offsets).astype(index_type)
 
-        q_cu_seqlen = generate_cu_seqlen(q_seqlen)
-        kv_cu_seqlen = generate_cu_seqlen(kv_seqlen)
+        q_cu_seqlen = generate_cu_seqlen(q_seqlen.flatten())
+        kv_cu_seqlen = generate_cu_seqlen(kv_seqlen.flatten())
 
         dq, dk, dv, dbias, _ = FusedAttnBwdPrimitive.inner_primitive.bind(
             q,
