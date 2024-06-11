@@ -1329,22 +1329,26 @@ void FusedAttnForward(cudaStream_t stream, void **buffers, const char *opaque, s
     auto bias_shape = std::vector<size_t>{bias_batch, bias_heads, q_max_seqlen, kv_max_seqlen};
     auto bias_tensor = TensorWrapper(bias, bias_shape, dtype);
 
-    int runtime_q_batch = GetValidBatch(q_cu_seqlens, input_batch * q_max_seqlen, stream);
-    int runtime_kv_batch = GetValidBatch(kv_cu_seqlens, input_batch * kv_max_seqlen, stream);
-    NVTE_CHECK(runtime_q_batch == runtime_kv_batch);
+    size_t num_segments = input_batch;  // Non-THD format, input_batch = num_segments
+    if (is_ragged) {
+        size_t runtime_q_batch = GetValidBatch(q_cu_seqlens, input_batch * q_max_seqlen, stream);
+        size_t runtime_kv_batch = GetValidBatch(kv_cu_seqlens, input_batch * kv_max_seqlen, stream);
+        NVTE_CHECK(runtime_q_batch == runtime_kv_batch);
+        num_segments = runtime_q_batch;
+    }
 
     auto q_cu_seqlens_tensor =
-        TensorWrapper(q_cu_seqlens, std::vector<size_t>{runtime_q_batch + 1}, DType::kInt32);
+        TensorWrapper(q_cu_seqlens, std::vector<size_t>{num_segments + 1}, DType::kInt32);
     auto kv_cu_seqlens_tensor =
-        TensorWrapper(kv_cu_seqlens, std::vector<size_t>{runtime_q_batch + 1}, DType::kInt32);
+        TensorWrapper(kv_cu_seqlens, std::vector<size_t>{num_segments + 1}, DType::kInt32);
     auto q_seq_offsets_tensor =
-        TensorWrapper(q_seq_offsets, std::vector<size_t>{runtime_q_batch + 1}, DType::kInt32);
+        TensorWrapper(q_seq_offsets, std::vector<size_t>{num_segments + 1}, DType::kInt32);
     auto k_seq_offsets_tensor =
-        TensorWrapper(k_seq_offsets, std::vector<size_t>{runtime_q_batch + 1}, DType::kInt32);
+        TensorWrapper(k_seq_offsets, std::vector<size_t>{num_segments + 1}, DType::kInt32);
     auto v_seq_offsets_tensor =
-        TensorWrapper(v_seq_offsets, std::vector<size_t>{runtime_q_batch + 1}, DType::kInt32);
+        TensorWrapper(v_seq_offsets, std::vector<size_t>{num_segments + 1}, DType::kInt32);
     auto o_seq_offsets_tensor =
-        TensorWrapper(o_seq_offsets, std::vector<size_t>{runtime_q_batch + 1}, DType::kInt32);
+        TensorWrapper(o_seq_offsets, std::vector<size_t>{num_segments + 1}, DType::kInt32);
 
     /* Output tensors */
     auto s_tensor = TensorWrapper(nullptr, std::vector<size_t>{1}, dtype);  // not used in F16
@@ -1525,22 +1529,26 @@ void FusedAttnBackward(cudaStream_t stream, void **buffers, const char *opaque, 
     auto output_tensor = TensorWrapper(output, output_shape, dtype);
     auto doutput_tensor = TensorWrapper(doutput, output_shape, dtype);
 
-    int runtime_q_batch = GetValidBatch(q_cu_seqlens, input_batch * q_max_seqlen, stream);
-    int runtime_kv_batch = GetValidBatch(kv_cu_seqlens, input_batch * kv_max_seqlen, stream);
-    NVTE_CHECK(runtime_q_batch == runtime_kv_batch);
+    size_t num_segments = input_batch;  // Non-THD format, input_batch = num_segments
+    if (is_ragged) {
+        size_t runtime_q_batch = GetValidBatch(q_cu_seqlens, input_batch * q_max_seqlen, stream);
+        size_t runtime_kv_batch = GetValidBatch(kv_cu_seqlens, input_batch * kv_max_seqlen, stream);
+        NVTE_CHECK(runtime_q_batch == runtime_kv_batch);
+        num_segments = runtime_q_batch;
+    }
 
     auto q_cu_seqlens_tensor =
-        TensorWrapper(q_cu_seqlens, std::vector<size_t>{runtime_q_batch + 1}, DType::kInt32);
+        TensorWrapper(q_cu_seqlens, std::vector<size_t>{num_segments + 1}, DType::kInt32);
     auto kv_cu_seqlens_tensor =
-        TensorWrapper(kv_cu_seqlens, std::vector<size_t>{runtime_q_batch + 1}, DType::kInt32);
+        TensorWrapper(kv_cu_seqlens, std::vector<size_t>{num_segments + 1}, DType::kInt32);
     auto q_seq_offsets_tensor =
-        TensorWrapper(q_seq_offsets, std::vector<size_t>{runtime_q_batch + 1}, DType::kInt32);
+        TensorWrapper(q_seq_offsets, std::vector<size_t>{num_segments + 1}, DType::kInt32);
     auto k_seq_offsets_tensor =
-        TensorWrapper(k_seq_offsets, std::vector<size_t>{runtime_q_batch + 1}, DType::kInt32);
+        TensorWrapper(k_seq_offsets, std::vector<size_t>{num_segments + 1}, DType::kInt32);
     auto v_seq_offsets_tensor =
-        TensorWrapper(v_seq_offsets, std::vector<size_t>{runtime_q_batch + 1}, DType::kInt32);
+        TensorWrapper(v_seq_offsets, std::vector<size_t>{num_segments + 1}, DType::kInt32);
     auto o_seq_offsets_tensor =
-        TensorWrapper(o_seq_offsets, std::vector<size_t>{runtime_q_batch + 1}, DType::kInt32);
+        TensorWrapper(o_seq_offsets, std::vector<size_t>{num_segments + 1}, DType::kInt32);
 
     /* Output tensors */
     auto s_tensor = TensorWrapper(nullptr, std::vector<size_t>{1}, dtype);  // not used in F16

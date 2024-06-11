@@ -45,25 +45,26 @@ void PopulateRngStateAsync(void *rng_state_dst, const void *const seed, size_t q
     NVTE_CHECK_CUDA(cudaGetLastError());
 }
 
-__global__ void get_valid_batch_kernel(int32_t* cu_seqlen, size_t len, int32_t* out) {
+__global__ void get_valid_batch_kernel(int32_t* cu_seqlen, size_t len, uint32_t* out) {
     int tid = blockDim.x * blockIdx.x + threadIdx.x;
     if (tid >= len)
         return;
 
     if (cu_seqlen[tid] > 0) {
+        // atomicAdd only support 32 bits dtype
         atomicAdd(out, 1);
     }
 }
 
-int32_t GetValidBatch(void* cu_seqlen, size_t len, cudaStream_t stream) {
-    int32_t* dout;
-    int32_t hout{};
-    cudaMallocAsync(&dout, sizeof(int32_t), stream);
-    cudaMemsetAsync(dout, 0, sizeof(int32_t), stream);
+uint32_t GetValidBatch(void* cu_seqlen, size_t len, cudaStream_t stream) {
+    uint32_t* dout;
+    uint32_t hout{};
+    cudaMallocAsync(&dout, sizeof(uint32_t), stream);
+    cudaMemsetAsync(dout, 0, sizeof(uint32_t), stream);
     constexpr int threads = 128;
     const int blocks = (len - 1) / threads + 1;
     get_valid_batch_kernel<<<blocks, threads, 0, stream>>>(static_cast<int32_t*>(cu_seqlen), len, dout);
-    cudaMemcpyAsync(&hout, dout, sizeof(int32_t), cudaMemcpyDeviceToHost, stream);
+    cudaMemcpyAsync(&hout, dout, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
     cudaFreeAsync(dout, stream);
     cudaStreamSynchronize(stream);
     return hout;

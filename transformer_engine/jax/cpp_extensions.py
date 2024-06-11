@@ -1913,24 +1913,6 @@ class FusedAttnHelper:
 
         return (q_batch_shape, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups, q_head_dim)
 
-    @staticmethod
-    def get_real_batch(q_cu_seqlen_aval, kv_cu_seqlen_aval, qkv_layout):
-        """
-        Get the real batch size (number of sequences) through cu_seqlen shape
-        For non-packed format, the batch size is equal to the batch dimension of input shape.
-        However, for packed format, the real number of sequences may greater than the batch
-        dimension of input shape. Thus we had to get the real batch size from length of cu_seqlen.
-        """
-        # For THD (packed) format, the cu_seqlen shape is not associated to input_shape
-        assert q_cu_seqlen_aval.shape[0] == kv_cu_seqlen_aval.shape[0], f'{q_cu_seqlen_aval.shape=} {kv_cu_seqlen_aval.shape=}'
-        if nvte_get_qkv_format(qkv_layout) == NVTE_QKV_Format.NVTE_THD:
-            input_batch = q_cu_seqlen_aval.shape[0]
-        else:
-            assert len(q_cu_seqlen_aval.shape) == 1, \
-                f"shape of cu_seqlen must be [batch,] but got {q_cu_seqlen_aval.shape}"
-            input_batch = q_cu_seqlen_aval.shape[0] - 1
-        return input_batch
-
 
 @dataclass(frozen=True)
 class _FusedAttnRNGStateChecker:
@@ -2023,7 +2005,7 @@ class FusedAttnFwdPrimitive(BasePrimitive):
             softmax_shape = (*batch_shape, attn_heads, q_max_seqlen, kv_max_seqlen)
             softmax_dtype = q_dtype
         elif backend == NVTE_Fused_Attn_Backend.NVTE_F16_arbitrary_seqlen:
-            softmax_shape = (*batch_shape, max_segments_per_seq, attn_heads, q_max_seqlen)
+            softmax_shape = (*batch_shape, attn_heads, q_max_seqlen, max_segments_per_seq)
             softmax_dtype = dtypes.canonicalize_dtype(jnp.float32)
         else:
             raise ValueError(f'Unsupported {backend=}')
@@ -2043,11 +2025,6 @@ class FusedAttnFwdPrimitive(BasePrimitive):
             *bias_batch_shape, bias_heads, _, _ = bias_aval.shape
             bias_batch = reduce(operator.mul, bias_batch_shape)
 
-        # do a dummy kernel call here to get workspace buffer shapes/dtypes that XLA needs to
-        # prepare for the active fused-attn backend
-        # input_batch = FusedAttnHelper.get_real_batch(q_seqlen_or_cu_seqlen_aval,
-        #                                              kv_seqlen_or_cu_seqlen_aval,
-        #                                              qkv_layout)
         input_batch = reduce(operator.mul, batch_shape)
         wkspace_info = transformer_engine_jax.get_fused_attn_fwd_workspace_sizes(
             input_batch * max_segments_per_seq, bias_batch, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups,
@@ -2092,7 +2069,6 @@ class FusedAttnFwdPrimitive(BasePrimitive):
         batch_shape, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups, head_dim = \
             FusedAttnHelper.parse_qkv_aval(q_aval, k_aval, v_aval, qkv_layout)
 
-        # input_batch = FusedAttnHelper.get_real_batch(q_cu_seqlen_aval, kv_cu_seqlen_aval, qkv_layout)
         input_batch = reduce(operator.mul, batch_shape)
 
         if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
@@ -2290,9 +2266,6 @@ class FusedAttnBwdPrimitive(BasePrimitive):
             *bias_batch_shape, bias_heads, _, _ = bias_aval.shape
             bias_batch = reduce(operator.mul, bias_batch_shape)
 
-        # input_batch = FusedAttnHelper.get_real_batch(q_seqlen_or_cu_seqlen_aval,
-        #                                              kv_seqlen_or_cu_seqlen_aval,
-        #                                              qkv_layout)
         input_batch = reduce(operator.mul, batch_shape)
         wkspace_shape, wkspace_dtype = \
             transformer_engine_jax.get_fused_attn_bwd_workspace_sizes(
@@ -2345,7 +2318,6 @@ class FusedAttnBwdPrimitive(BasePrimitive):
         batch_shape, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups, head_dim = \
             FusedAttnHelper.parse_qkv_aval(q_aval, k_aval, v_aval, qkv_layout)
 
-        # input_batch = FusedAttnHelper.get_real_batch(q_cu_seqlen_aval, kv_cu_seqlen_aval, qkv_layout)
         input_batch = reduce(operator.mul, batch_shape)
 
         if attn_bias_type == NVTE_Bias_Type.NVTE_NO_BIAS:
