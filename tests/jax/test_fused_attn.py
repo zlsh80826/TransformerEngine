@@ -329,7 +329,7 @@ class FusedAttnRunner:
             return segment_ids, segment_pad
 
         if get_qkv_format(self.qkv_layout) == QKVFormat.THD:
-            self.num_segments_per_seq = 5
+            self.num_segments_per_seq = 3
             self.token_q, self.segment_pad_q = generate_random_segment_ids(
                 self.batch_size, self.max_seqlen_q, self.num_segments_per_seq, seed=42)
             # TODO(rewang): check if qkvpacked supported different q/kv
@@ -520,12 +520,12 @@ class FusedAttnRunner:
     # pytest.param(jnp.float16, id="FP16"),
 ])
 @pytest.mark.parametrize('b, s_q, s_kv, h_q, h_kv, d', [
-    pytest.param(32, 128, 128, 16, 16, 64, id='32-128-128-16-16-64-SELF'),
-    pytest.param(4, 2048, 2048, 12, 12, 64, id='4-2048-2048-12-12-64-SELF'),
-    pytest.param(32, 512, 128, 16, 16, 64, id='32-512-128-16-16-64-CROSS'),
-    pytest.param(4, 2048, 1024, 12, 12, 64, id='4-2048-1048-12-12-64-CROSS'),
-    pytest.param(32, 128, 128, 16, 8, 64, id='32-128-128-16-8-64-GQA'),
-    pytest.param(4, 2048, 2048, 12, 6, 64, id='4-2048-2048-12-6-64-GQA'),
+    pytest.param(4, 128, 128, 16, 16, 64, id='4-128-128-16-16-64-SELF'),
+    pytest.param(2, 2048, 2048, 12, 12, 64, id='2-2048-2048-12-12-64-SELF'),
+    pytest.param(4, 512, 128, 16, 16, 64, id='4-512-128-16-16-64-CROSS'),
+    pytest.param(2, 2048, 1024, 12, 12, 64, id='2-2048-1048-12-12-64-CROSS'),
+    pytest.param(4, 128, 128, 16, 8, 64, id='4-128-128-16-8-64-GQA'),
+    pytest.param(2, 2048, 2048, 12, 6, 64, id='2-2048-2048-12-6-64-GQA'),
 ])
 @pytest.mark.parametrize('dropout_prob', [
     pytest.param(0.0, id="DROP_0.0"),
