@@ -472,8 +472,6 @@ class FusedAttnRunner:
         check_dqkv(primitive_dv, reference_dv, self.pad_kv)
 
         if self.attn_bias_type != AttnBiasType.NO_BIAS and self.bias_shape == BiasShape.BIAS_1HSS:
-            # primitive_dbias = jnp.float32(primitive_dgrad[3])
-            # reference_dbias = jnp.float32(reference_dgrad[3])
             primitive_dbias = primitive_dgrad[3]
             reference_dbias = reference_dgrad[3]
 
