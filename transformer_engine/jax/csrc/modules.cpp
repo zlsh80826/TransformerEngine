@@ -130,11 +130,11 @@ pybind11::bytes PackCustomCallFusedAttnDescriptor(
     size_t attn_heads, size_t num_gqa_groups, size_t bias_heads, size_t head_dim,
     size_t wkspace_size, float scaling_factor, float dropout_probability, NVTE_Bias_Type bias_type,
     NVTE_Mask_Type mask_type, NVTE_QKV_Layout qkv_layout, DType dtype, DType wkspace_dtype,
-    bool is_training, bool is_ragged) {
+    bool is_training) {
     return PackOpaque(CustomCallFusedAttnDescriptor{
         input_batch, bias_batch, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups,
         bias_heads, head_dim, wkspace_size, scaling_factor, dropout_probability, bias_type,
-        mask_type, qkv_layout, dtype, wkspace_dtype, is_training, is_ragged});
+        mask_type, qkv_layout, dtype, wkspace_dtype, is_training});
 }
 
 void TransposeImpl(void *input, size_t rows, size_t cols, DType dtype, cudaStream_t stream,
@@ -1284,7 +1284,8 @@ void FusedAttnForward(cudaStream_t stream, void **buffers, const char *opaque, s
     const CustomCallFusedAttnDescriptor &descriptor =
         *UnpackOpaque<CustomCallFusedAttnDescriptor>(opaque, opaque_len);
 
-    auto is_ragged = descriptor.is_ragged;
+    auto qkv_layout = descriptor.qkv_layout;
+    auto is_ragged = nvte_get_qkv_format(qkv_layout) == NVTE_QKV_Format::NVTE_THD;
 
     /* Input buffers from XLA */
     /* Buffers[0-2] are q, k, v, which are parsed later for different qkv_layout */
@@ -1316,7 +1317,6 @@ void FusedAttnForward(cudaStream_t stream, void **buffers, const char *opaque, s
     auto dropout_probability = descriptor.dropout_probability;
     auto bias_type = descriptor.bias_type;
     auto mask_type = descriptor.mask_type;
-    auto qkv_layout = descriptor.qkv_layout;
     auto dtype = descriptor.dtype;
     auto is_training = descriptor.is_training;
 
@@ -1479,7 +1479,8 @@ void FusedAttnBackward(cudaStream_t stream, void **buffers, const char *opaque, 
     const CustomCallFusedAttnDescriptor &descriptor =
         *UnpackOpaque<CustomCallFusedAttnDescriptor>(opaque, opaque_len);
 
-    auto is_ragged = descriptor.is_ragged;
+    auto qkv_layout = descriptor.qkv_layout;
+    auto is_ragged = nvte_get_qkv_format(qkv_layout) == NVTE_QKV_Format::NVTE_THD;
 
     /* Input buffers from XLA */
     /* Buffers[0-2] are q, k, v, which are parsed later for different qkv_layout */
@@ -1513,7 +1514,6 @@ void FusedAttnBackward(cudaStream_t stream, void **buffers, const char *opaque, 
     auto dropout_probability = descriptor.dropout_probability;
     auto bias_type = descriptor.bias_type;
     auto mask_type = descriptor.mask_type;
-    auto qkv_layout = descriptor.qkv_layout;
     auto dtype = descriptor.dtype;
 
     /* Input tensors */

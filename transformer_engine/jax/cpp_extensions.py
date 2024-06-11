@@ -1988,7 +1988,7 @@ class FusedAttnFwdPrimitive(BasePrimitive):
     """
     name = "te_fused_attn_forward"
     multiple_results = True
-    impl_static_args = (11, 12, 13, 14, 15, 16, 17)
+    impl_static_args = (11, 12, 13, 14, 15, 16)
     inner_primitive = None
     outer_primitive = None
 
@@ -1997,7 +1997,7 @@ class FusedAttnFwdPrimitive(BasePrimitive):
                  q_seqlen_or_cu_seqlen_aval, kv_seqlen_or_cu_seqlen_aval,
                  _q_seq_offsets, _k_seq_offsets, _v_seq_offsets, _o_seq_offsets,
                  seed_aval, *, attn_bias_type, attn_mask_type, qkv_layout, scaling_factor,
-                 dropout_probability, is_training, is_ragged):
+                 dropout_probability, is_training):
         """
         Fused attention fwd abstract
         """
@@ -2071,7 +2071,7 @@ class FusedAttnFwdPrimitive(BasePrimitive):
     def lowering(ctx, q, k, v, bias, q_cu_seqlen, kv_cu_seqlen,
                  q_seq_offsets, k_seq_offsets, v_seq_offsets, o_seq_offsets,
                  seed, *, attn_bias_type, attn_mask_type, qkv_layout, scaling_factor,
-                 dropout_probability, is_training, is_ragged):
+                 dropout_probability, is_training):
         """
         Fused attention fwd lowering rules
         """
@@ -2106,7 +2106,7 @@ class FusedAttnFwdPrimitive(BasePrimitive):
             input_batch, bias_batch, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups,
             bias_heads, head_dim, wkspace_aval.size, scaling_factor, dropout_probability,
             attn_bias_type, attn_mask_type, qkv_layout, jax_dtype_to_te_dtype(q_aval.dtype),
-            jax_dtype_to_te_dtype(wkspace_aval.dtype), is_training, is_ragged)
+            jax_dtype_to_te_dtype(wkspace_aval.dtype), is_training)
 
         out = custom_caller(FusedAttnFwdPrimitive.name, args, opaque, has_side_effect=False)
 
@@ -2116,7 +2116,7 @@ class FusedAttnFwdPrimitive(BasePrimitive):
     def impl(q, k, v, bias, q_seqlen, kv_seqlen,
              q_seq_offsets, k_seq_offsets, v_seq_offsets, o_seq_offsets, seed,
              attn_bias_type, attn_mask_type, qkv_layout, scaling_factor, dropout_probability,
-             is_training, is_ragged):
+             is_training):
         assert FusedAttnFwdPrimitive.inner_primitive is not None
 
         if nvte_get_qkv_format(qkv_layout) == NVTE_QKV_Format.NVTE_THD:
@@ -2175,13 +2175,12 @@ class FusedAttnFwdPrimitive(BasePrimitive):
             qkv_layout=qkv_layout,
             scaling_factor=scaling_factor,
             dropout_probability=dropout_probability,
-            is_training=is_training,
-            is_ragged=is_ragged)
+            is_training=is_training)
         return output, softmax_aux, rng_state
 
     @staticmethod
     def batcher(batched_args, batch_dims, *, attn_bias_type, attn_mask_type, qkv_layout,
-                scaling_factor, dropout_probability, is_training, is_ragged):
+                scaling_factor, dropout_probability, is_training):
         _check_valid_batch_dims(batch_dims)
         assert FusedAttnFwdPrimitive.outer_primitive is not None
         q_bdim, *_, seed_bdim = batch_dims
@@ -2193,15 +2192,14 @@ class FusedAttnFwdPrimitive(BasePrimitive):
                                                           qkv_layout=qkv_layout,
                                                           scaling_factor=scaling_factor,
                                                           dropout_probability=dropout_probability,
-                                                          is_training=is_training,
-                                                          is_ragged=is_ragged), out_bdims
+                                                          is_training=is_training), out_bdims
 
     @staticmethod
     def infer_sharding_from_operands(attn_bias_type, attn_mask_type, qkv_layout, scaling_factor,
-                                     dropout_probability, is_training, is_ragged, mesh, arg_infos,
+                                     dropout_probability, is_training, mesh, arg_infos,
                                      result_infos):
         del attn_bias_type, attn_mask_type, scaling_factor
-        del dropout_probability, is_training, is_ragged, result_infos
+        del dropout_probability, is_training, result_infos
         q_spec = get_padded_spec(arg_infos[0])
         k_spec = get_padded_spec(arg_infos[1])
         match qkv_layout:
@@ -2229,7 +2227,7 @@ class FusedAttnFwdPrimitive(BasePrimitive):
 
     @staticmethod
     def partition(attn_bias_type, attn_mask_type, qkv_layout, scaling_factor, dropout_probability,
-                  is_training, is_ragged, mesh, arg_infos, result_infos):
+                  is_training, mesh, arg_infos, result_infos):
         out_sharding = result_infos[0].sharding
         softmax_aux_sharding = result_infos[1].sharding
         rng_state_sharding = seed_sharding = NamedSharding(mesh,
@@ -2242,8 +2240,7 @@ class FusedAttnFwdPrimitive(BasePrimitive):
                        qkv_layout=qkv_layout,
                        scaling_factor=scaling_factor,
                        dropout_probability=dropout_probability,
-                       is_training=is_training,
-                       is_ragged=is_ragged)
+                       is_training=is_training)
         return mesh, impl, out_shardings, arg_shardings
 
 
@@ -2256,7 +2253,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
     """
     name = "te_fused_attn_backward"
     multiple_results = True
-    impl_static_args = (14, 15, 16, 17, 18, 19, 20)
+    impl_static_args = (14, 15, 16, 17, 18, 19)
     inner_primitive = None
     outer_primitive = None
 
@@ -2265,7 +2262,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
                  doutput_aval, q_seqlen_or_cu_seqlen_aval, kv_seqlen_or_cu_seqlen_aval,
                  _q_seq_offsets, _k_seq_offsets, _v_seq_offsets, _o_seq_offsets, *,
                  attn_bias_type, attn_mask_type,
-                 qkv_layout, scaling_factor, dropout_probability, is_training, is_ragged):
+                 qkv_layout, scaling_factor, dropout_probability, is_training):
         """
         Fused attention bwd abstract
         """
@@ -2320,7 +2317,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
     def lowering(ctx, q, k, v, bias, softmax_aux, rng_state, output, doutput, q_cu_seqlen,
                  kv_cu_seqlen, q_seq_offsets, k_seq_offsets, v_seq_offsets, o_seq_offsets, *,
                  attn_bias_type, attn_mask_type, qkv_layout, scaling_factor, dropout_probability,
-                 is_training, is_ragged):
+                 is_training):
         """
         Fused attention bwd lowering rules
         """
@@ -2357,7 +2354,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
             input_batch, bias_batch, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups,
             bias_heads, head_dim, wkspace_aval.size, scaling_factor, dropout_probability,
             attn_bias_type, attn_mask_type, qkv_layout, jax_dtype_to_te_dtype(q_aval.dtype),
-            jax_dtype_to_te_dtype(wkspace_aval.dtype), is_training, is_ragged)
+            jax_dtype_to_te_dtype(wkspace_aval.dtype), is_training)
 
         out = custom_caller(FusedAttnBwdPrimitive.name, args, opaque, has_side_effect=False)
 
@@ -2366,8 +2363,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
     @staticmethod
     def impl(q, k, v, bias, softmax_aux, rng_state, output, doutput, q_seqlen, kv_seqlen,
              q_seq_offsets, k_seq_offsets, v_seq_offsets, o_seq_offsets, attn_bias_type,
-             attn_mask_type, qkv_layout, scaling_factor, dropout_probability, is_training,
-             is_ragged):
+             attn_mask_type, qkv_layout, scaling_factor, dropout_probability, is_training):
         assert FusedAttnBwdPrimitive.inner_primitive is not None
 
         if nvte_get_qkv_format(qkv_layout) == NVTE_QKV_Format.NVTE_THD:
@@ -2428,13 +2424,12 @@ class FusedAttnBwdPrimitive(BasePrimitive):
             qkv_layout=qkv_layout,
             scaling_factor=scaling_factor,
             dropout_probability=dropout_probability,
-            is_training=is_training,
-            is_ragged=is_ragged)
+            is_training=is_training)
         return dq, dk, dv, dbias
 
     @staticmethod
     def batcher(batched_args, batch_dims, *, attn_bias_type, attn_mask_type, qkv_layout,
-                scaling_factor, dropout_probability, is_training, is_ragged):
+                scaling_factor, dropout_probability, is_training):
         _check_valid_batch_dims(batch_dims)
         assert FusedAttnBwdPrimitive.outer_primitive is not None
         q_bdim, k_bdim, v_bdim, *_ = batch_dims
@@ -2446,15 +2441,14 @@ class FusedAttnBwdPrimitive(BasePrimitive):
                                                           qkv_layout=qkv_layout,
                                                           scaling_factor=scaling_factor,
                                                           dropout_probability=dropout_probability,
-                                                          is_training=is_training,
-                                                          is_ragged=is_ragged), out_bdims
+                                                          is_training=is_training), out_bdims
 
     @staticmethod
     def infer_sharding_from_operands(attn_bias_type, attn_mask_type, qkv_layout, scaling_factor,
-                                     dropout_probability, is_training, is_ragged, mesh, arg_infos,
+                                     dropout_probability, is_training, mesh, arg_infos,
                                      result_infos):
         del attn_bias_type, attn_mask_type, qkv_layout, scaling_factor
-        del dropout_probability, is_training, is_ragged, result_infos
+        del dropout_probability, is_training, result_infos
         q_spec = get_padded_spec(arg_infos[0])
         k_spec = get_padded_spec(arg_infos[1])
         v_spec = get_padded_spec(arg_infos[2])
@@ -2467,7 +2461,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
 
     @staticmethod
     def partition(attn_bias_type, attn_mask_type, qkv_layout, scaling_factor, dropout_probability,
-                  is_training, is_ragged, mesh, arg_infos, result_infos):
+                  is_training, mesh, arg_infos, result_infos):
         del result_infos
         q_spec = get_padded_spec(arg_infos[0])
         k_spec = get_padded_spec(arg_infos[1])
@@ -2502,8 +2496,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
                 qkv_layout=qkv_layout,
                 scaling_factor=scaling_factor,
                 dropout_probability=dropout_probability,
-                is_training=is_training,
-                is_ragged=is_ragged)
+                is_training=is_training)
             global_dbias = local_dbias
             if attn_bias_type is not NVTE_Bias_Type.NVTE_NO_BIAS:
                 global_dbias = all_reduce_sum_along_dp_fsdp(local_dbias)
@@ -2591,8 +2584,7 @@ def fused_attn_fwd(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray],
         qkv_layout=qkv_layout,
         scaling_factor=scaling_factor,
         dropout_probability=dropout_probability,
-        is_training=is_training,
-        is_ragged=is_ragged)
+        is_training=is_training)
 
 
 def fused_attn_bwd(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray],
@@ -2682,8 +2674,7 @@ def fused_attn_bwd(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray],
         qkv_layout=qkv_layout,
         scaling_factor=scaling_factor,
         dropout_probability=dropout_probability,
-        is_training=is_training,
-        is_ragged=is_ragged)
+        is_training=is_training)
     return tuple(qkv_grads[:len(qkv)]), bias_grad
 
 

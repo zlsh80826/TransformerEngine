@@ -135,7 +135,6 @@ struct CustomCallFusedAttnDescriptor {
     DType dtype;
     DType wkspace_dtype;
     bool is_training;
-    bool is_ragged;
 };
 
 pybind11::bytes PackCustomCallFusedAttnDescriptor(
@@ -143,7 +142,7 @@ pybind11::bytes PackCustomCallFusedAttnDescriptor(
     size_t attn_heads, size_t num_gqa_groups, size_t bias_heads, size_t head_dim,
     size_t wkspace_size, float scaling_factor, float dropout_probability, NVTE_Bias_Type bias_type,
     NVTE_Mask_Type mask_type, NVTE_QKV_Layout qkv_layout, DType dtype, DType wkspace_dtype,
-    bool is_training, bool is_ragged);
+    bool is_training);
 
 NVTE_Fused_Attn_Backend GetFusedAttnBackend(DType q_dtype, DType kv_dtype,
                                             NVTE_QKV_Layout qkv_layout, NVTE_Bias_Type bias_type,
