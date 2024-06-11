@@ -114,16 +114,18 @@ def make_mask(q_token: ArrayLike, kv_token: ArrayLike,
     if is_causal_mask(attn_mask_type):
         inv_causal_mask = make_causal_mask(q_token, kv_token)
         inv_mask = combine_masks(inv_causal_mask, inv_mask)
+    if segment_pad_q is not None and segment_pad_kv is not None:
+        inv_pad_mask = make_attention_mask(segment_pad_q, segment_pad_kv, lambda x, y: jnp.logical_and(x != 1, y != 1))
+        inv_mask = combine_masks(inv_pad_mask, inv_mask)
     mask = jnp.logical_not(inv_mask)
     return mask
 
 
-def get_seqlens_and_offsets(segment_ids):
+def get_seqlens_and_offsets(segment_ids, segment_pad):
     batch, max_seqlen = segment_ids.shape
     bincount_vmap = jax.vmap(partial(jnp.bincount, length=max_seqlen))
     seqlens_with_zero = bincount_vmap(segment_ids.astype(jnp.int32))
     seqlens = seqlens_with_zero[..., 1:]
-    seqlens = jnp.insert(seqlens, -1, values=0, axis=-1)
     def _find_offsets(x):
         same_as_previous = jnp.logical_and(x[..., 1:] != x[..., :-1], x[..., 1:] != 0)
         first_column = jnp.ones((x.shape[0], 1), dtype=bool)
@@ -131,7 +133,13 @@ def get_seqlens_and_offsets(segment_ids):
         return jax.vmap(partial(jnp.argwhere, size=x.shape[1], fill_value=-1))(same_as_previous).squeeze(-1)
     offsets = _find_offsets(segment_ids)
     offsets_2d = jnp.where(offsets >= 0, offsets + (jnp.arange(batch) * max_seqlen)[..., jnp.newaxis], offsets)
-    return seqlens, offsets_2d
+    if segment_pad is not None:
+        segment_id_with_paddings = jnp.where(segment_pad, 0, segment_ids)
+        padding_aware_seqlen = bincount_vmap(segment_id_with_paddings)
+        output = jnp.insert(padding_aware_seqlen[..., 1:], -1, values=0, axis=-1)
+    else:
+        output = jnp.insert(seqlens, -1, values=0, axis=-1)
+    return output, offsets_2d
 
 
 @jax.jit
@@ -293,7 +301,7 @@ class FusedAttnRunner:
             tokens = jnp.concatenate([jnp.ones((bs, valid_len)), jnp.zeros((bs, pad_len))], axis=-1)
             return tokens, jnp.logical_not(tokens)
 
-        def generate_random_segment_ids(batch_size, sequence_length, max_segment_size, seed, with_segment_pad=False):
+        def generate_random_segment_ids(batch_size, sequence_length, max_segment_size, seed, with_segment_pad=True):
             rng = np.random.default_rng(seed=seed)
             # [1, 1, 1, 2, 2, 3, 3, 3, 3, 0, 0], 0 means pad
             segment_ids = np.zeros((batch_size, sequence_length), dtype=int)
@@ -342,8 +350,8 @@ class FusedAttnRunner:
         self.mask = make_mask(self.token_q, self.token_kv, self.segment_pad_q, self.segment_pad_kv, self.attn_mask_type)
 
         if get_qkv_format(self.qkv_layout) == QKVFormat.THD:
-            self.seqlens_q, self.offsets_q = get_seqlens_and_offsets(self.token_q)
-            self.seqlens_kv, self.offsets_kv = get_seqlens_and_offsets(self.token_kv)
+            self.seqlens_q, self.offsets_q = get_seqlens_and_offsets(self.token_q, self.segment_pad_q)
+            self.seqlens_kv, self.offsets_kv = get_seqlens_and_offsets(self.token_kv, self.segment_pad_kv)
             self.mask_for_customcall = None  # THD format doesn't support mask
         else:
             self.seqlens_q = self.seqlens_kv = self.offsets_q = self.offsets_kv = None
