@@ -2027,7 +2027,7 @@ class FusedAttnFwdPrimitive(BasePrimitive):
 
         input_batch = reduce(operator.mul, batch_shape)
         wkspace_info = transformer_engine_jax.get_fused_attn_fwd_workspace_sizes(
-            input_batch * max_segments_per_seq, bias_batch, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups,
+            input_batch, bias_batch, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups,
             bias_heads, head_dim, scaling_factor, dropout_probability, attn_bias_type,
             attn_mask_type, qkv_layout, jax_dtype_to_te_dtype(q_aval.dtype), is_training,
             max_segments_per_seq)
@@ -2105,9 +2105,18 @@ class FusedAttnFwdPrimitive(BasePrimitive):
                 y = jnp.take(x, indices, fill_value=-1)
                 return jnp.reshape(y, x_shape)
 
+            # Gather valid q_seqlen, which is greater than 0
+            q_seqlen = _fix_len_take(q_seqlen, q_seqlen > 0)
+            kv_seqlen = _fix_len_take(kv_seqlen, kv_seqlen > 0)
+
+            # Gather valid offsets, which is greater and equal than 0
+            q_seq_offsets = q_seq_offsets - q_seq_offsets[0][0]  # For sharding
+            k_seq_offsets = k_seq_offsets - k_seq_offsets[0][0]  # For sharding
             q_seq_offsets = _fix_len_take(q_seq_offsets, q_seq_offsets >= 0)
-            q_seq_offsets = jnp.where(q_seq_offsets < 0, q_seq_offsets.size, q_seq_offsets)
             k_seq_offsets = _fix_len_take(k_seq_offsets, k_seq_offsets >= 0)
+
+            # Reset the unused valus to max size
+            q_seq_offsets = jnp.where(q_seq_offsets < 0, q_seq_offsets.size, q_seq_offsets)
             k_seq_offsets = jnp.where(k_seq_offsets < 0, k_seq_offsets.size, k_seq_offsets)
 
             index_type = jnp.int32
@@ -2128,9 +2137,6 @@ class FusedAttnFwdPrimitive(BasePrimitive):
                         (reduce(operator.mul, q.shape[-2:]) * q_seq_offsets).astype(index_type)
                     k_seq_offsets = v_seq_offsets = \
                         (reduce(operator.mul, k.shape[-2:]) * k_seq_offsets).astype(index_type)
-
-            q_seqlen = _fix_len_take(q_seqlen, q_seqlen > 0)
-            kv_seqlen = _fix_len_take(kv_seqlen, kv_seqlen > 0)
 
         q_cu_seqlen = generate_cu_seqlen(q_seqlen.flatten())
         kv_cu_seqlen = generate_cu_seqlen(kv_seqlen.flatten())
@@ -2269,7 +2275,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
         input_batch = reduce(operator.mul, batch_shape)
         wkspace_shape, wkspace_dtype = \
             transformer_engine_jax.get_fused_attn_bwd_workspace_sizes(
-                input_batch * max_segments_per_seq, bias_batch, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups,
+                input_batch, bias_batch, q_max_seqlen, kv_max_seqlen, attn_heads, num_gqa_groups,
                 bias_heads, head_dim, scaling_factor, dropout_probability, attn_bias_type,
                 attn_mask_type, qkv_layout, jax_dtype_to_te_dtype(q_aval.dtype), is_training,
                 max_segments_per_seq)
@@ -2350,14 +2356,22 @@ class FusedAttnBwdPrimitive(BasePrimitive):
                 x = x.flatten()
                 size = x.size
                 indices = jnp.nonzero(condition.flatten(), size=size, fill_value=size)[0]
+                # TODO(rewang): try indices_are_sorted
                 y = jnp.take(x, indices, fill_value=-1)
                 return jnp.reshape(y, x_shape)
 
+            # Gather valid q_seqlen, which is greater than 0
             q_seqlen = _fix_len_take(q_seqlen, q_seqlen > 0)
             kv_seqlen = _fix_len_take(kv_seqlen, kv_seqlen > 0)
+
+            # Gather valid offsets, which is greater and equal than 0
+            q_seq_offsets = q_seq_offsets - q_seq_offsets[0][0]  # For sharding
+            k_seq_offsets = k_seq_offsets - k_seq_offsets[0][0]  # For sharding
             q_seq_offsets = _fix_len_take(q_seq_offsets, q_seq_offsets >= 0)
-            q_seq_offsets = jnp.where(q_seq_offsets < 0, q_seq_offsets.size, q_seq_offsets)
             k_seq_offsets = _fix_len_take(k_seq_offsets, k_seq_offsets >= 0)
+
+            # Reset the unused valus to max size
+            q_seq_offsets = jnp.where(q_seq_offsets < 0, q_seq_offsets.size, q_seq_offsets)
             k_seq_offsets = jnp.where(k_seq_offsets < 0, k_seq_offsets.size, k_seq_offsets)
 
             index_type = jnp.int32

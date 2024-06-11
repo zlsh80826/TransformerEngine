@@ -123,8 +123,15 @@ def fused_attn(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray], mask: 
     """
     Dot product attention ... (TODO): rewang
     """
+
+    if get_qkv_format(qkv_layout) == QKVFormat.THD:
+        assert mask is None, "THD format doesn't support mask, please provide the explicit " \
+            "[q_seqlens, kv_seqlens, q_seq_offsets, kv_seq_offsets]."
+    else:
+        assert max_segments_per_seq == 1, "max_segments_per_seq should be 1 for non-THD format."
+
     if mask is not None:
-        # convert the mask the seqlens, mask doesn't support ragged offsets
+        # convert the mask to seqlens, mask doesn't support ragged offsets
         assert all(x is None for x in [q_seq_lens, q_seq_offsets, kv_seq_lens, kv_seq_offsets])
         if attn_mask_type in [AttnMaskType.NO_MASK, AttnMaskType.CAUSAL_MASK]:
             batch, q_max_seqlen, kv_max_seqlen = _obtain_batch_and_max_seqlen(qkv, qkv_layout)
@@ -140,9 +147,9 @@ def fused_attn(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray], mask: 
                 # When mask is causal, the actual seqlen is not the last row, use max to find it
                 kv_seq_lens = jnp.max(jnp.sum(mask, axis=-1, dtype=jnp.int32), axis=(-1, -2))
     else:
-        assert all(x is not None for x in [q_seq_lens, q_seq_offsets, kv_seq_lens, kv_seq_offsets])
-
-    assert (q_seq_offsets is None) == (kv_seq_offsets is None)
+        assert \
+            all(x is not None for x in [q_seq_lens, q_seq_offsets, kv_seq_lens, kv_seq_offsets]), \
+            "mask is None, seq_lens and seq_offsets must not be None."
 
     output = _fused_attn(qkv,
                          bias,
@@ -163,7 +170,7 @@ def fused_attn(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray], mask: 
 
 
 @partial(jax.custom_vjp, nondiff_argnums=(7, 8, 9, 10, 11, 12, 13))
-def _fused_attn(qkv: Tuple[jnp.ndarray, ...], bias: jnp.ndarray,
+def _fused_attn(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray],
                 q_seq_lens: jnp.ndarray, kv_seq_lens: jnp.ndarray,
                 q_seq_offsets: Optional[jnp.ndarray], kv_seq_offsets: Optional[jnp.ndarray],
                 seed: jnp.ndarray, attn_bias_type: AttnBiasType, attn_mask_type: AttnMaskType,
