@@ -118,8 +118,8 @@ def fused_attn(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray], mask: 
                q_seq_lens: Optional[jnp.ndarray], kv_seq_lens: Optional[jnp.ndarray],
                q_seq_offsets: Optional[jnp.ndarray], kv_seq_offsets: Optional[jnp.ndarray],
                seed: jnp.ndarray, attn_bias_type: AttnBiasType, attn_mask_type: AttnMaskType,
-               qkv_layout: QKVLayout,
-               scaling_factor: float, dropout_probability: float, is_training: bool):
+               qkv_layout: QKVLayout, scaling_factor: float, dropout_probability: float,
+               is_training: bool, max_segments_per_seq: int = 1):
     """
     Dot product attention ... (TODO): rewang
     """
@@ -156,27 +156,29 @@ def fused_attn(qkv: Tuple[jnp.ndarray, ...], bias: Optional[jnp.ndarray], mask: 
                          qkv_layout=qkv_layout,
                          scaling_factor=scaling_factor,
                          dropout_probability=dropout_probability,
-                         is_training=is_training)
+                         is_training=is_training,
+                         max_segments_per_seq=max_segments_per_seq)
 
     return output
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(7, 8, 9, 10, 11, 12))
+@partial(jax.custom_vjp, nondiff_argnums=(7, 8, 9, 10, 11, 12, 13))
 def _fused_attn(qkv: Tuple[jnp.ndarray, ...], bias: jnp.ndarray,
                 q_seq_lens: jnp.ndarray, kv_seq_lens: jnp.ndarray,
                 q_seq_offsets: Optional[jnp.ndarray], kv_seq_offsets: Optional[jnp.ndarray],
                 seed: jnp.ndarray, attn_bias_type: AttnBiasType, attn_mask_type: AttnMaskType,
                 qkv_layout: QKVLayout, scaling_factor: float, dropout_probability: float,
-                is_training: bool):
+                is_training: bool, max_segments_per_seq: int):
     output, _ = _fused_attn_fwd_rule(qkv, bias, q_seq_lens, kv_seq_lens, q_seq_offsets,
                                      kv_seq_offsets, seed, attn_bias_type, attn_mask_type,
-                                     qkv_layout, scaling_factor, dropout_probability, is_training)
+                                     qkv_layout, scaling_factor, dropout_probability, is_training,
+                                     max_segments_per_seq)
     return output
 
 
 def _fused_attn_fwd_rule(qkv, bias, q_seq_lens, kv_seq_lens, q_seq_offsets, kv_seq_offsets,
                          seed, attn_bias_type, attn_mask_type, qkv_layout, scaling_factor,
-                         dropout_probability, is_training):
+                         dropout_probability, is_training, max_segments_per_seq):
     output, softmax_aux, rng_state = fused_attn_fwd(qkv,
                                                     bias,
                                                     q_seq_lens,
@@ -189,7 +191,8 @@ def _fused_attn_fwd_rule(qkv, bias, q_seq_lens, kv_seq_lens, q_seq_offsets, kv_s
                                                     qkv_layout=qkv_layout.value,
                                                     scaling_factor=scaling_factor,
                                                     dropout_probability=dropout_probability,
-                                                    is_training=is_training)
+                                                    is_training=is_training,
+                                                    max_segments_per_seq=max_segments_per_seq)
     output = checkpoint_name(output, 'context')
     softmax_aux = checkpoint_name(softmax_aux, 'context')
     rng_state = checkpoint_name(rng_state, 'context')
@@ -198,7 +201,7 @@ def _fused_attn_fwd_rule(qkv, bias, q_seq_lens, kv_seq_lens, q_seq_offsets, kv_s
 
 
 def _fused_attn_bwd_rule(attn_bias_type, attn_mask_type, qkv_layout, scaling_factor,
-                         dropout_probability, is_training, ctx, dz):
+                         dropout_probability, is_training, max_segments_per_seq, ctx, dz):
     qkv, bias, q_seq_lens, kv_seq_lens, q_seq_offsets, kv_seq_offsets, \
         softmax_aux, rng_state, output = ctx
     grad_qkv, grad_bias = fused_attn_bwd(qkv,
@@ -216,7 +219,8 @@ def _fused_attn_bwd_rule(attn_bias_type, attn_mask_type, qkv_layout, scaling_fac
                                         qkv_layout=qkv_layout.value,
                                         scaling_factor=scaling_factor,
                                         dropout_probability=dropout_probability,
-                                        is_training=is_training)
+                                        is_training=is_training,
+                                        max_segments_per_seq=max_segments_per_seq)
     if attn_bias_type == AttnBiasType.NO_BIAS:
         grad_bias = None
     return grad_qkv, grad_bias, None, None, None, None, None

@@ -1205,7 +1205,8 @@ pybind11::tuple GetFusedAttnForwardWorkspaceSizes(
     size_t input_batch, size_t bias_batch, size_t q_max_seqlen, size_t kv_max_seqlen,
     size_t attn_heads, size_t num_gqa_groups, size_t bias_heads, size_t head_dim,
     float scaling_factor, float dropout_probability, NVTE_Bias_Type bias_type,
-    NVTE_Mask_Type mask_type, NVTE_QKV_Layout qkv_layout, DType dtype, bool is_training) {
+    NVTE_Mask_Type mask_type, NVTE_QKV_Layout qkv_layout, DType dtype, bool is_training,
+    size_t max_segments_per_seq) {
     // For qkv_packed
     auto qkv_shape = std::vector<size_t>{input_batch * q_max_seqlen, 3, attn_heads, head_dim};
     auto qkv_tensor = TensorWrapper(nullptr, qkv_shape, dtype);
@@ -1229,10 +1230,11 @@ pybind11::tuple GetFusedAttnForwardWorkspaceSizes(
     auto s_tensor = TensorWrapper(nullptr, std::vector<size_t>{1}, dtype);
     auto o_tensor = TensorWrapper(nullptr, q_shape, dtype);
 
+    // TODO(rewang): create multiple cuDNN graph in cache
     auto q_cu_seqlens_tensor =
-        TensorWrapper(nullptr, std::vector<size_t>{input_batch * q_max_seqlen + 1}, DType::kInt32);
+        TensorWrapper(nullptr, std::vector<size_t>{input_batch * max_segments_per_seq + 1}, DType::kInt32);
     auto kv_cu_seqlens_tensor =
-        TensorWrapper(nullptr, std::vector<size_t>{input_batch * kv_max_seqlen + 1}, DType::kInt32);
+        TensorWrapper(nullptr, std::vector<size_t>{input_batch * max_segments_per_seq + 1}, DType::kInt32);
 
     auto dummy_rng_state_tensor = TensorWrapper(nullptr, std::vector<size_t>{2}, DType::kInt64);
 
@@ -1240,7 +1242,7 @@ pybind11::tuple GetFusedAttnForwardWorkspaceSizes(
     nvte_tensor_pack_create(&aux_output_tensors);
 
     auto ragged_offset_tensor =
-        TensorWrapper(nullptr, std::vector<size_t>{input_batch * kv_max_seqlen + 1}, DType::kInt32);
+        TensorWrapper(nullptr, std::vector<size_t>{input_batch * max_segments_per_seq + 1}, DType::kInt32);
 
     TensorWrapper query_workspace_tensor;
     if (qkv_layout == NVTE_QKV_Layout::NVTE_BS3HD || qkv_layout == NVTE_QKV_Layout::NVTE_T3HD) {
@@ -1426,7 +1428,8 @@ pybind11::tuple GetFusedAttnBackwardWorkspaceSizes(
     size_t input_batch, size_t bias_batch, size_t q_max_seqlen, size_t kv_max_seqlen,
     size_t attn_heads, size_t num_gqa_groups, size_t bias_heads, size_t head_dim,
     float scaling_factor, float dropout_probability, NVTE_Bias_Type bias_type,
-    NVTE_Mask_Type mask_type, NVTE_QKV_Layout qkv_layout, DType dtype, bool is_training) {
+    NVTE_Mask_Type mask_type, NVTE_QKV_Layout qkv_layout, DType dtype, bool is_training,
+    size_t max_segments_per_seq) {
     auto q_shape = std::vector<size_t>{input_batch * q_max_seqlen, attn_heads, head_dim};
     auto k_shape = std::vector<size_t>{input_batch * kv_max_seqlen, num_gqa_groups, head_dim};
     auto v_shape = k_shape;
@@ -1447,16 +1450,16 @@ pybind11::tuple GetFusedAttnBackwardWorkspaceSizes(
     auto dbias_tensor = TensorWrapper(nullptr, bias_shape, dtype);
 
     auto q_cu_seqlens_tensor =
-        TensorWrapper(nullptr, std::vector<size_t>{input_batch * q_max_seqlen + 1}, DType::kInt32);
+        TensorWrapper(nullptr, std::vector<size_t>{input_batch * max_segments_per_seq + 1}, DType::kInt32);
     auto kv_cu_seqlens_tensor =
-        TensorWrapper(nullptr, std::vector<size_t>{input_batch * kv_max_seqlen + 1}, DType::kInt32);
+        TensorWrapper(nullptr, std::vector<size_t>{input_batch * max_segments_per_seq + 1}, DType::kInt32);
 
     NVTETensorPack aux_input_tensors;
     nvte_tensor_pack_create(&aux_input_tensors);
 
     TensorWrapper query_workspace_tensor;
     auto dummy_ragged_offset_tensor =
-        TensorWrapper(nullptr, std::vector<size_t>{input_batch * q_max_seqlen + 1}, DType::kInt32);
+        TensorWrapper(nullptr, std::vector<size_t>{input_batch * max_segments_per_seq + 1}, DType::kInt32);
     // TODO(rewang): fix here
     nvte_fused_attn_bwd(q_tensor.data(), k_tensor.data(), v_tensor.data(), output_tensor.data(),
                         doutput_tensor.data(),

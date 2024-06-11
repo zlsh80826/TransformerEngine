@@ -301,7 +301,7 @@ class FusedAttnRunner:
             tokens = jnp.concatenate([jnp.ones((bs, valid_len)), jnp.zeros((bs, pad_len))], axis=-1)
             return tokens, jnp.logical_not(tokens)
 
-        def generate_random_segment_ids(batch_size, sequence_length, max_segment_size, seed, with_segment_pad=True):
+        def generate_random_segment_ids(batch_size, sequence_length, num_segments, seed, with_segment_pad=True):
             rng = np.random.default_rng(seed=seed)
             # [1, 1, 1, 2, 2, 3, 3, 3, 3, 0, 0], 0 means pad
             segment_ids = np.zeros((batch_size, sequence_length), dtype=int)
@@ -329,9 +329,9 @@ class FusedAttnRunner:
             return segment_ids, segment_pad
 
         if get_qkv_format(self.qkv_layout) == QKVFormat.THD:
-            num_segments = 5
+            self.num_segments_per_seq = 5
             self.token_q, self.segment_pad_q = generate_random_segment_ids(
-                self.batch_size, self.max_seqlen_q, num_segments, seed=42)
+                self.batch_size, self.max_seqlen_q, self.num_segments_per_seq, seed=42)
             # TODO(rewang): check if qkvpacked supported different q/kv
             # TODO(rewang): Causal with different q/kv segment_id fails
             if self.qkv_layout == QKVLayout.T3HD or is_causal_mask(self.attn_mask_type):
@@ -339,10 +339,11 @@ class FusedAttnRunner:
                 self.segment_pad_kv = self.segment_pad_q
             else:
                 self.token_kv, self.segment_pad_kv = generate_random_segment_ids(
-                    self.batch_size, self.max_seqlen_kv, num_segments, seed=2024)
+                    self.batch_size, self.max_seqlen_kv, self.num_segments_per_seq, seed=2024)
             self.pad_q = self.segment_pad_q
             self.pad_kv = self.segment_pad_kv
         else:
+            self.num_segments_per_seq = 1
             self.token_q, self.pad_q = gen_valid(self.batch_size, self.max_seqlen_q, pad_ratio)
             self.token_kv, self.pad_kv = gen_valid(self.batch_size, self.max_seqlen_kv, pad_ratio)
             self.segment_pad_q = self.segment_pad_kv = None
@@ -378,6 +379,7 @@ class FusedAttnRunner:
             'dropout_probability': self.dropout_prob,
             'is_training': self.is_training,
             'qkv_layout': self.qkv_layout,
+            'max_segments_per_seq': self.num_segments_per_seq,
         }
 
         # Convert the outputs to float32 for the elementwise comparison
@@ -426,6 +428,7 @@ class FusedAttnRunner:
             'dropout_probability': self.dropout_prob,
             'is_training': self.is_training,
             'qkv_layout': self.qkv_layout,
+            'max_segments_per_seq': self.num_segments_per_seq,
         }
 
         # We can compute dBias only for the [1, h, s, s] layout
