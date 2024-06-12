@@ -392,9 +392,7 @@ class FusedAttnRunner:
         primitive_valid, primitive_invalid, reference_valid, reference_invalid = \
             _split_valid_and_invalid(primitive_out, reference_out, self.pad_q)
 
-        # TODO(rewang): check
-        if get_qkv_format(self.qkv_layout) != QKVFormat.THD:
-            assert_allclose(primitive_invalid, jnp.zeros_like(primitive_invalid), dtype=self.dtype)
+        assert_allclose(primitive_invalid, jnp.zeros_like(primitive_invalid), dtype=self.dtype)
         assert_allclose(primitive_valid, reference_valid, dtype=self.dtype)
 
 

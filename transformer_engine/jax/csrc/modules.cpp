@@ -1340,6 +1340,7 @@ void FusedAttnForward(cudaStream_t stream, void **buffers, const char *opaque, s
         size_t runtime_num_segments_kv = GetRuntimeNumSegments(kv_cu_seqlens, workspace, input_batch * kv_max_seqlen, stream);
         NVTE_CHECK(runtime_num_segments_q == runtime_num_segments_kv);
         num_segments = runtime_num_segments_q;
+        cudaMemsetAsync(output, 0, input_batch * q_max_seqlen * attn_heads * head_dim * typeToSize(dtype), stream);
     }
 
     auto q_cu_seqlens_tensor =
