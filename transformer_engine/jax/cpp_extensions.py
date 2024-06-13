@@ -2189,18 +2189,18 @@ class FusedAttnFwdPrimitive(BasePrimitive):
         k_spec = get_padded_spec(arg_infos[1])
         # TODO(rewang): check with max_segments_per_seq
         match qkv_layout:
-            case NVTE_QKV_Layout.NVTE_BS3HD:
+            case NVTE_QKV_Layout.NVTE_BS3HD | NVTE_QKV_Layout.NVTE_T3HD:
                 # q_spec = (...batch, q_seqlen, head, hidden)
                 out_sharding = NamedSharding(mesh, PartitionSpec(*q_spec[:-3], *q_spec[-2:]))
                 softmax_aux_sharding = NamedSharding(
                     mesh, PartitionSpec(*q_spec[:-4], q_spec[-2], q_spec[-4], None))
-            case NVTE_QKV_Layout.NVTE_BSHD_BS2HD:
+            case NVTE_QKV_Layout.NVTE_BSHD_BS2HD | NVTE_QKV_Layout.NVTE_THD_T2HD:
                 # q_spec = (...batch, q_seqlen, head, hidden)
                 # k_spec = (...batch, kv_seqlen, 2, num_gqa_groups, hidden)
                 out_sharding = NamedSharding(mesh, PartitionSpec(*q_spec))
                 softmax_aux_sharding = NamedSharding(
                     mesh, PartitionSpec(*q_spec[:-3], q_spec[-2], q_spec[-3], k_spec[-4]))
-            case NVTE_QKV_Layout.NVTE_BSHD_BSHD_BSHD:
+            case NVTE_QKV_Layout.NVTE_BSHD_BSHD_BSHD | NVTE_QKV_Layout.NVTE_THD_THD_THD:
                 # q_spec = (...batch, q_seqlen, head, hidden)
                 # k_spec = (...batch, kv_seqlen, num_gqa_groups, hidden)
                 out_sharding = NamedSharding(mesh, PartitionSpec(*q_spec))
@@ -2490,7 +2490,7 @@ class FusedAttnBwdPrimitive(BasePrimitive):
                 qkv_layout=qkv_layout,
                 scaling_factor=scaling_factor,
                 dropout_probability=dropout_probability,
-                is_training=is_trainin,
+                is_training=is_training,
                 max_segments_per_seq=max_segments_per_seq)
             global_dbias = local_dbias
             if attn_bias_type is not NVTE_Bias_Type.NVTE_NO_BIAS:
