@@ -28,7 +28,6 @@ from transformer_engine.jax.attention import (
     AttnBiasType,
     AttnMaskType,
     QKVLayout,
-    QKVFormat,
     reorder_causal_load_balancing,
     inverse_reorder_causal_load_balancing,
     fused_attn,
