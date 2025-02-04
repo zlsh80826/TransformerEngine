@@ -640,6 +640,9 @@ class FusedAttnFwdPrimitive(BasePrimitive):
         )
         arg_shardings = [arg_i.sharding for arg_i in arg_infos]
         arg_shardings[4] = seed_sharding
+        arg_shardings[-1] = arg_shardings[-3]
+        arg_shardings[-2] = arg_shardings[-4]
+        # print(f'!!! {arg_shardings=}')
         arg_shardings = tuple(arg_shardings)
         out_shardings = (out_sharding, softmax_aux_sharding, rng_state_sharding)
         impl = partial(FusedAttnFwdPrimitive.impl, config=config)

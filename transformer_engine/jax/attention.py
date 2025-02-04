@@ -303,6 +303,7 @@ def _get_seqlens_and_offsets(segment_ids, max_segments_per_seq):
         ).squeeze(-1)
 
     offsets = _find_offsets(segment_ids)
+    # jax.debug.print("seqlens = {}, offsets = {}", seqlens, offsets)
     return seqlens, offsets
 
 
@@ -324,6 +325,7 @@ def _segment_ids_pos_to_seqlens_offsets(
     window_size,
     max_segments_per_seq,
 ):
+    print(f'{segment_ids_q=} {segment_ids_kv=}', flush=True)
     # (1 = attend, 0 = masked)
     segment_mask = make_attention_mask(
         segment_ids_q,
@@ -416,13 +418,19 @@ class SequenceDescriptor:
         qkv_layout = QKVLayout(qkv_layout)
         q_segment_ids, kv_segment_ids = self.segment_ids
         q_segment_pos, kv_segment_pos = self.segment_pos
-        assert q_segment_ids.shape == q_segment_pos.shape
-        assert kv_segment_ids.shape == kv_segment_pos.shape
+        # assert q_segment_ids.shape == q_segment_pos.shape, f"{q_segment_ids.shape=} {q_segment_pos.shape=}"
+        # assert kv_segment_ids.shape == kv_segment_pos.shape, f"{kv_segment_ids.shape=} {kv_segment_pos.shape=}"
         # No segment_ids/segment_pos
         if q_segment_ids.size + kv_segment_ids.size == 0:
             return self.seqlens, self.seq_offsets
 
         if qkv_layout.is_thd():
+            if q_segment_pos.size == 0:
+                bs, max_seqlen = q_segment_ids.shape
+                q_segment_pos = jnp.broadcast_to(jnp.arange(max_seqlen), q_segment_ids.shape)
+                bs, max_seqlen = kv_segment_ids.shape
+                kv_segment_pos = jnp.broadcast_to(jnp.arange(max_seqlen), kv_segment_ids.shape)
+                print(f'{q_segment_ids=} {q_segment_pos.shape=}', flush=True)
             q_seqlens, kv_seqlens, q_offsets, kv_offsets = _segment_ids_pos_to_seqlens_offsets(
                 q_segment_ids,
                 kv_segment_ids,
@@ -541,12 +549,14 @@ class SequenceDescriptor:
         else:
 
             def generate_default_pos(segment_ids):
-                seqlen = segment_ids.shape[-1]
-                return jnp.broadcast_to(jnp.arange(seqlen), segment_ids.shape)
+                bs, seqlen = segment_ids.shape
+                return jnp.tile(jnp.arange(seqlen), (bs, 1))
+                # return jnp.broadcast_to(jnp.arange(seqlen), segment_ids.shape)
 
             q_seg_pos = generate_default_pos(q_seg_ids)
             kv_seg_pos = generate_default_pos(kv_seg_ids)
             segment_pos = (q_seg_pos, kv_seg_pos)
+            segment_pos = (jnp.zeros(0), jnp.zeros(0))
 
         return cls(
             segment_ids=(q_seg_ids, kv_seg_ids),
