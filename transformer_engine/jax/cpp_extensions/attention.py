@@ -640,6 +640,8 @@ class FusedAttnFwdPrimitive(BasePrimitive):
         )
         arg_shardings = [arg_i.sharding for arg_i in arg_infos]
         arg_shardings[4] = seed_sharding
+        arg_shardings[-1] = arg_shardings[-3]
+        arg_shardings[-2] = arg_shardings[-4]
         arg_shardings = tuple(arg_shardings)
         out_shardings = (out_sharding, softmax_aux_sharding, rng_state_sharding)
         impl = partial(FusedAttnFwdPrimitive.impl, config=config)
@@ -1037,7 +1039,10 @@ class FusedAttnBwdPrimitive(BasePrimitive):
         dk_sharding = NamedSharding(mesh, PartitionSpec(*k_spec))
         dv_sharding = NamedSharding(mesh, PartitionSpec(*v_spec))
         dbias_sharding = NamedSharding(mesh, PartitionSpec(*bias_spec))
-        arg_shardings = tuple(arg_i.sharding for arg_i in arg_infos)
+        arg_shardings = [arg_i.sharding for arg_i in arg_infos]
+        arg_shardings[-1] = arg_shardings[-3]
+        arg_shardings[-2] = arg_shardings[-4]
+        arg_shardings = tuple(arg_shardings)
         out_shardings = (dq_sharding, dk_sharding, dv_sharding, dbias_sharding)
 
         def sharded_impl(
